@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Say</string>
+    <key>CFBundleDisplayName</key>
+    <string>Say</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.say.dictation</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleExecutable</key>
+    <string>Say</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Say records your voice to transcribe it locally on this Mac. No audio is uploaded.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Say sends synthetic keyboard events to insert transcribed text into the active app.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Say does not use the camera.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Say uses Accessibility APIs to inject transcribed text and watch the Fn hotkey.</string>
+</dict>
+</plist>

@@ -1,0 +1,23 @@
+.DS_Store
+.idea/
+__pycache__/
+*.py[cod]
+*.pyo
+
+.venv/
+venv/
+env/
+
+build/
+dist/
+*.spec
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+*.zip
+*.docx
+
+# Claude Code runtime state
+.claude/scheduled_tasks.lock

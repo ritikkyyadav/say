@@ -1,0 +1,30 @@
+# Say — Dependencies
+# On-device voice dictation for macOS
+# ============================================================
+#
+# Versions are pinned to a known-good combination. Bumping mlx-whisper
+# in particular requires re-validating the model-loading path; see
+# transcriber.py. Use requirements.lock for full reproducibility once
+# `pip-tools` / `uv pip compile` is wired up (Phase 8).
+
+# Core — Whisper inference on Apple Silicon
+mlx-whisper==0.4.3
+
+# Audio capture
+sounddevice==0.5.5
+numpy>=2.0,<3.0
+
+# macOS integration
+pyobjc-framework-Cocoa==12.1
+pyobjc-framework-Quartz==12.1
+pynput==1.8.1
+pyperclip==1.11.0
+
+# Menu bar
+rumps==0.4.0
+
+# HTTP API for the desktop UI sidecar
+fastapi>=0.110
+uvicorn>=0.27
+sse-starlette>=2.0
+platformdirs>=4.0
