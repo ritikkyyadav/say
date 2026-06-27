@@ -4,6 +4,7 @@ import { api } from '../lib/api';
 import { DeltaBadge, HalfDonut, KpiCard } from '../components/KpiCard';
 import { UsageGauge } from '../components/UsageGauge';
 import { StreakHeatmap } from '../components/StreakHeatmap';
+import { PermissionsBanner } from '../components/PermissionsBanner';
 import { appLabel } from '../lib/appNames';
 
 // Reference cohort for the WPM percentile pill. Percentiles based on a
@@ -34,8 +35,12 @@ export function Insights() {
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold mb-6">Insights</h1>
-      <div className="flex items-center gap-2 mb-6 border-b border-hairline">
+      <header className="mb-9">
+        <p className="eyebrow mb-3">How you dictate</p>
+        <h1 className="display text-[2.75rem]">Insights</h1>
+      </header>
+      <PermissionsBanner />
+      <div className="flex items-center gap-6 mb-8 border-b border-cloud-light">
         <TabButton active={tab === 'usage'} onClick={() => setTab('usage')}>
           Your Usage
         </TabButton>
@@ -60,10 +65,10 @@ function TabButton({
   return (
     <button
       onClick={onClick}
-      className={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
+      className={`pb-3 -mb-px text-[14px] border-b-2 transition-colors ${
         active
-          ? 'border-accent text-ink font-medium'
-          : 'border-transparent text-ink-mute hover:text-ink'
+          ? 'border-crail text-ink font-medium'
+          : 'border-transparent text-cloud-dark hover:text-ink'
       }`}
     >
       {children}
@@ -113,13 +118,11 @@ function YourUsage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="card p-5">
-          <div className="text-[12px] uppercase tracking-wide text-ink-mute mb-3">
-            Desktop usage
-          </div>
+          <div className="eyebrow mb-4">Desktop usage</div>
           {usage.isLoading ? (
-            <div className="text-sm text-ink-mute">Loading…</div>
+            <div className="text-[14px] text-cloud-dark">Loading…</div>
           ) : (usage.data?.length ?? 0) === 0 ? (
-            <div className="text-sm text-ink-mute">
+            <div className="text-[14px] text-cloud-dark">
               No dictations yet — start using Say to populate this.
             </div>
           ) : (
@@ -139,7 +142,7 @@ function YourUsage() {
         {heatmap.data ? (
           <StreakHeatmap data={heatmap.data} />
         ) : (
-          <div className="card p-5 text-sm text-ink-mute">Loading heatmap…</div>
+          <div className="card p-5 text-[14px] text-cloud-dark">Loading heatmap…</div>
         )}
       </div>
     </div>
@@ -148,9 +151,12 @@ function YourUsage() {
 
 function YourVoice() {
   return (
-    <div className="card p-8 text-center text-ink-mute">
-      <div className="text-base text-ink mb-2">Your Voice</div>
-      <div className="text-sm">Coming soon. We'll surface tone, pacing, and filler patterns once enough local data is captured.</div>
+    <div className="card p-10 max-w-prose">
+      <h3 className="font-serif text-h3 font-normal text-ink mb-2">Your Voice</h3>
+      <p className="text-[14px] text-cloud-dark leading-relaxed">
+        Coming soon. We'll surface tone, pacing, and filler patterns once enough local data is
+        captured — computed on this Mac, never uploaded.
+      </p>
     </div>
   );
 }

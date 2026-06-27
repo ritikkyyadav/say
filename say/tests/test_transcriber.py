@@ -29,6 +29,15 @@ class HallucinationFilterTests(unittest.TestCase):
         self.assertIn('gracias', union)
         self.assertIn('merci', union)
 
+    def test_punctuation_variants_normalize_into_filter(self):
+        # Whisper emits "Thank you." / "Thank you!" on silence — trailing
+        # punctuation must not let the hallucination slip past the filter.
+        from transcriber import _build_active_filter, _normalize_for_filter
+
+        en = _build_active_filter('en')
+        for variant in ('Thank you.', 'Thank you!', ' Thanks… ', 'Bye-bye.'):
+            self.assertIn(_normalize_for_filter(variant), en)
+
 
 class TranscriberApiTests(unittest.TestCase):
     def test_swap_model_marks_unloaded(self):

@@ -1,6 +1,7 @@
 import { HeatmapCell } from '../lib/api';
 
-const SCALE = ['#E5E1DA', '#BFE3DE', '#5FB6AC', '#1A8076', '#0B5D5A'];
+// Warm crail ramp: empty cloud → faint tint → clay → crail → deep crail.
+const SCALE = ['#e8e6dc', '#f0d9cd', '#e0a989', '#d97757', '#b85c3e'];
 
 function shade(count: number): string {
   if (count <= 0) return SCALE[0];
@@ -55,14 +56,14 @@ export function StreakHeatmap({ data }: { data: HeatmapCell[] }) {
 
   return (
     <div className="card p-5">
-      <div className="flex items-baseline justify-between mb-3">
+      <div className="flex items-baseline justify-between mb-4">
         <div>
-          <div className="text-[12px] uppercase tracking-wide text-ink-mute">Streak heatmap</div>
-          <div className="text-sm text-ink mt-1">
+          <div className="eyebrow">Streak heatmap</div>
+          <div className="text-[14px] text-ink mt-1.5">
             {activeDays} active days · {totalDays} dictations
           </div>
         </div>
-        <div className="flex items-center gap-1 text-[10px] text-ink-mute">
+        <div className="flex items-center gap-1 text-[10px] text-cloud-dark">
           Less
           {SCALE.map((c, i) => (
             <span key={i} className="w-3 h-3 rounded-sm" style={{ backgroundColor: c }} />
@@ -79,7 +80,7 @@ export function StreakHeatmap({ data }: { data: HeatmapCell[] }) {
             width: cols.length * (cellSize + gap),
           }}
         >
-          <div className="absolute top-0 left-0 right-0 flex text-[10px] text-ink-mute" style={{ height: 14 }}>
+          <div className="absolute top-0 left-0 right-0 flex text-[10px] text-cloud-dark" style={{ height: 14 }}>
             {monthMarks.map((m) => (
               <span
                 key={`${m.col}-${m.label}`}

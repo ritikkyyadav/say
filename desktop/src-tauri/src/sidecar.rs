@@ -99,6 +99,7 @@ pub fn read_runtime_info() -> Option<RuntimeInfo> {
     serde_json::from_slice(&bytes).ok()
 }
 
+#[allow(dead_code)]
 pub fn is_runtime_fresh(max_age: Duration) -> bool {
     let p = runtime_path();
     let Ok(meta) = fs::metadata(&p) else {
@@ -113,6 +114,27 @@ pub fn is_runtime_fresh(max_age: Duration) -> bool {
     age <= max_age && read_runtime_info().is_some()
 }
 
+/// Check whether the engine process recorded in runtime.json is still alive.
+/// Uses kill(pid, 0) on Unix — no signal is sent; it just checks existence.
+/// Returns false if runtime.json is absent, has no pid, or the process is gone.
+pub fn is_engine_alive() -> bool {
+    let Some(info) = read_runtime_info() else {
+        return false;
+    };
+    let Some(pid) = info.pid else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        (unsafe { libc::kill(pid as libc::pid_t, 0) }) == 0
+    }
+    #[cfg(not(unix))]
+    {
+        // On non-Unix we fall back to the 60-second freshness heuristic.
+        is_runtime_fresh(Duration::from_secs(60))
+    }
+}
+
 fn engine_binary_paths(app: &AppHandle) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(custom) = env::var("SAY_ENGINE_BIN") {
@@ -120,7 +142,7 @@ fn engine_binary_paths(app: &AppHandle) -> Vec<PathBuf> {
     }
     if let Ok(resource_dir) = app.path().resource_dir() {
         // Engine bundled as a nested .app inside Resources/.
-        out.push(resource_dir.join("SayEngine.app").join("Contents").join("MacOS").join("Say"));
+        out.push(resource_dir.join("OceanusEngine.app").join("Contents").join("MacOS").join("Oceanus"));
         // Or as a flat one-dir PyInstaller artifact.
         out.push(resource_dir.join("say-engine"));
         out.push(resource_dir.join("resources").join("say-engine"));
@@ -133,10 +155,10 @@ fn engine_binary_paths(app: &AppHandle) -> Vec<PathBuf> {
                 out.push(
                     contents
                         .join("Resources")
-                        .join("SayEngine.app")
+                        .join("OceanusEngine.app")
                         .join("Contents")
                         .join("MacOS")
-                        .join("Say"),
+                        .join("Oceanus"),
                 );
             }
             out.push(parent.join("say-engine"));

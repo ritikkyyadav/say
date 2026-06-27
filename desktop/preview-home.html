@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              ink: '#141413', 'book-cloth': '#faf9f5', paper: '#f5f4ee',
+              'cloud-light': '#e8e6dc', 'cloud-mid': '#b0aea5', 'cloud-dark': '#6b6a63',
+              crail: { DEFAULT: '#d97757', deep: '#c66848' },
+              'slate-blue': '#6a9bcc', olive: '#788c5d', clay: '#bd8b6a',
+            },
+            fontFamily: {
+              serif: ['Fraunces', 'Georgia', 'serif'],
+              sans: ['Geist', 'Inter', 'system-ui', 'sans-serif'],
+              mono: ['"Geist Mono"', 'ui-monospace', 'monospace'],
+            },
+            letterSpacing: { caps: '0.04em' },
+            maxWidth: { prose: '680px', container: '1240px' },
+            borderRadius: { card: '8px' },
+          },
+        },
+      };
+    </script>
+    <style>
+      body { background:#faf9f5; color:#141413; font-family:'Geist',Inter,system-ui,sans-serif; font-size:15px; font-feature-settings:'kern','liga','calt'; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; margin:0; }
+      h1,h2,.display { font-family:'Fraunces',Georgia,serif; font-weight:400; font-variation-settings:'opsz' 144,'SOFT' 50,'WONK' 0; letter-spacing:-0.015em; line-height:1.1; }
+      .display { letter-spacing:-0.02em; line-height:1.05; }
+      p.font-serif { font-variation-settings:'opsz' 14,'SOFT' 50,'WONK' 0; }
+      .tnum { font-feature-settings:'tnum' 1,'kern' 1; }
+      .eyebrow { font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:.04em; color:#6b6a63; }
+      .card { background:#f5f4ee; border:1px solid #e8e6dc; border-radius:8px; }
+      .stat-number { font-family:'Fraunces',Georgia,serif; font-weight:400; line-height:1; font-feature-settings:'tnum' 1; }
+      .pill { display:inline-flex; align-items:center; gap:6px; border-radius:999px; padding:2px 10px; font-size:12px; font-weight:500; }
+      .pill-mute { background:#faf9f5; color:#6b6a63; border:1px solid #e8e6dc; }
+      .sidebar-item { display:flex; align-items:center; padding:8px 12px; border-radius:8px; font-size:14px; color:#6b6a63; }
+      .sidebar-item:hover { background:#faf9f5; color:#141413; }
+      .sidebar-item-active { background:#faf9f5; color:#141413; font-weight:500; position:relative; padding-left:16px; }
+      .sidebar-item-active::before { content:''; position:absolute; left:0; top:6px; bottom:6px; width:3px; border-radius:999px; background:#d97757; }
+      .sidebar-item-disabled { opacity:.4; }
+    </style>
+    <title>Say — Home preview</title>
+  </head>
+  <body>
+    <div class="flex h-screen">
+      <!-- Sidebar -->
+      <aside class="w-[244px] shrink-0 h-full flex flex-col px-3 py-5 border-r border-cloud-light bg-paper">
+        <div class="px-3 mb-9 flex items-center gap-3">
+          <img src="./public/logo.png" alt="Say" class="w-9 h-9 rounded-md border border-cloud-light" />
+          <div class="leading-none">
+            <div class="font-serif text-[22px] tracking-tight text-ink">Say</div>
+            <div class="text-[11px] text-cloud-dark mt-1">Local · on-device</div>
+          </div>
+        </div>
+        <nav class="flex flex-col gap-0.5">
+          <div class="sidebar-item-active">Home</div>
+          <div class="sidebar-item">Insights</div>
+          <div class="sidebar-item-disabled sidebar-item">Dictionary <span class="ml-auto eyebrow text-[9px]">soon</span></div>
+          <div class="sidebar-item-disabled sidebar-item">Snippets <span class="ml-auto eyebrow text-[9px]">soon</span></div>
+          <div class="sidebar-item-disabled sidebar-item">Style <span class="ml-auto eyebrow text-[9px]">soon</span></div>
+          <div class="sidebar-item-disabled sidebar-item">Transforms <span class="ml-auto eyebrow text-[9px]">soon</span></div>
+          <div class="sidebar-item-disabled sidebar-item">Scratchpad <span class="ml-auto eyebrow text-[9px]">soon</span></div>
+        </nav>
+        <div class="mt-auto px-3 pt-5 border-t border-cloud-light">
+          <div class="eyebrow mb-2">Local-only</div>
+          <div class="text-[14px] text-ink leading-snug">1,284 transcripts on this Mac</div>
+          <div class="text-[12px] text-cloud-dark mt-1.5 leading-relaxed">Audio is never written to disk.</div>
+        </div>
+      </aside>
+
+      <!-- Main -->
+      <main class="flex-1 min-w-0 overflow-hidden">
+        <header class="bg-book-cloth border-b border-cloud-light px-10 py-4 flex items-center justify-between">
+          <div class="flex items-center gap-2.5 text-[12px] text-cloud-dark">
+            <span class="eyebrow">On-device</span>
+            <span class="text-cloud-mid">·</span>
+            <span>Audio never leaves this Mac</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="pill bg-paper text-ink border border-cloud-light">
+              <span class="w-1.5 h-1.5 rounded-full bg-olive"></span> Fn ready
+            </span>
+          </div>
+        </header>
+
+        <div class="px-10 py-12 max-w-container">
+          <div class="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-12">
+            <div class="min-w-0">
+              <header class="mb-10">
+                <p class="eyebrow mb-3">Your dictation</p>
+                <h1 class="display text-[2.75rem]">Welcome back, Ritik</h1>
+              </header>
+
+              <div class="flex flex-col gap-10">
+                <section>
+                  <h2 class="eyebrow mb-4">Today</h2>
+                  <div class="flex flex-col gap-3">
+                    <article class="card p-5">
+                      <div class="flex items-center justify-between text-[12px] text-cloud-dark mb-2.5">
+                        <span class="tnum">9:24 AM</span>
+                        <span class="pill-mute">Copy</span>
+                      </div>
+                      <p class="font-serif text-[1.0625rem] text-ink leading-relaxed">Let's ship the editorial redesign today. The cream background and serif headlines make the whole thing feel calmer — more like a notebook than a dashboard.</p>
+                    </article>
+                    <article class="card p-5">
+                      <div class="flex items-center justify-between text-[12px] text-cloud-dark mb-2.5">
+                        <span class="tnum">9:02 AM</span>
+                        <span class="pill-mute">Copy</span>
+                      </div>
+                      <p class="font-serif text-[1.0625rem] text-ink leading-relaxed">Reminder to follow up on the design review and confirm the crail accent reads well against the heatmap.</p>
+                    </article>
+                  </div>
+                </section>
+
+                <section>
+                  <h2 class="eyebrow mb-4">Yesterday</h2>
+                  <div class="flex flex-col gap-3">
+                    <article class="card p-5">
+                      <div class="flex items-center justify-between text-[12px] text-cloud-dark mb-2.5">
+                        <span class="tnum">6:41 PM</span>
+                        <span class="pill-mute">Copy</span>
+                      </div>
+                      <p class="font-serif text-[1.0625rem] text-ink leading-relaxed">Draft reply: thanks for the notes — I've pushed the changes and the build is green.</p>
+                    </article>
+                    <article class="card p-5">
+                      <div class="flex items-center justify-between text-[12px] text-cloud-dark mb-2.5">
+                        <span class="tnum">2:15 PM</span>
+                        <span class="pill-mute">Copy</span>
+                      </div>
+                      <p class="font-serif text-[1.0625rem] text-ink leading-relaxed">Quick capture — try Fraunces at optical size fourteen for the transcript body so long passages stay readable.</p>
+                    </article>
+                  </div>
+                </section>
+              </div>
+            </div>
+
+            <aside class="flex flex-col gap-4">
+              <div class="card p-5">
+                <div class="eyebrow">Total words</div>
+                <div class="stat-number text-[2.25rem] mt-3">48,210</div>
+              </div>
+              <div class="card p-5">
+                <div class="eyebrow">Words per minute</div>
+                <div class="stat-number text-[2.25rem] mt-3">132</div>
+              </div>
+              <div class="card p-5">
+                <div class="eyebrow">Streak · days</div>
+                <div class="stat-number text-[2.25rem] mt-3">14</div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>

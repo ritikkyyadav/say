@@ -28,14 +28,13 @@ VALID_MODELS = {
 #   - Fn (Quartz CGEventTap):  Hold Fn → PTT,  Fn+Space → hands-free
 #   - Legacy (pynput):         Hold Ctrl+Space → PTT (no hands-free)
 #
-# Apple Silicon currently dispatches the system globe-key action
-# ("Press 🌐 to: Show Emoji & Symbols", input-source switch, Start
-# Dictation) below every user-space hook we have access to —
-# CGEventTap at any level, including HID, can be bypassed, and even
-# flipping AppleFnUsageType to 0 doesn't reliably suppress the action
-# on every macOS version. Until that is solved, the safe default is
-# the legacy ctrl+space hotkey, which has none of those interactions.
-PREFER_LEGACY_HOTKEY = True
+# Fn is the default trigger (Say's signature interaction); while running, the
+# engine neutralizes the macOS globe-key action via AppleFnUsageType. On some
+# macOS versions that suppression is imperfect, so `listener_factory` auto-falls
+# back to the legacy ctrl+space hotkey whenever the Fn CGEventTap can't start
+# (e.g. Input Monitoring not granted). Set this True to force the legacy hotkey
+# from the start and skip the Fn path entirely.
+PREFER_LEGACY_HOTKEY = False
 
 HOTKEY = 'fn'
 HOTKEY_LEGACY = 'ctrl+space'  # Used by the pynput listener

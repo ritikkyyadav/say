@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Say",
+  "productName": "Oceanus",
   "version": "0.1.0",
-  "identifier": "com.say.dictation.desktop",
+  "identifier": "com.oceanus.dictation.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Say",
+        "title": "Oceanus",
         "width": 1100,
         "height": 760,
         "minWidth": 900,
@@ -31,10 +31,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": ["app"],
     "category": "Productivity",
     "shortDescription": "Local-first dictation",
-    "longDescription": "Say is a local-first voice dictation app. Audio never leaves your Mac.",
+    "longDescription": "Oceanus is a local-first voice dictation app. Audio never leaves your Mac.",
     "icon": [
       "icons/icon.png"
     ],

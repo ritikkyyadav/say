@@ -2,8 +2,10 @@ import { useEffect } from 'react';
 import { Route, Routes, useNavigate } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { RecordingDot } from './components/RecordingDot';
+import { HotkeyPill } from './components/HotkeyPill';
 import { Home } from './routes/Home';
 import { Insights } from './routes/Insights';
+import { Models } from './routes/Models';
 
 export default function App() {
   const navigate = useNavigate();
@@ -16,6 +18,9 @@ export default function App() {
       } else if ((e.metaKey || e.ctrlKey) && e.key === '2') {
         e.preventDefault();
         navigate('/insights');
+      } else if ((e.metaKey || e.ctrlKey) && e.key === '3') {
+        e.preventDefault();
+        navigate('/models');
       }
     };
     window.addEventListener('keydown', onKey);
@@ -26,23 +31,22 @@ export default function App() {
     <div className="flex h-full">
       <Sidebar />
       <main className="flex-1 min-w-0 overflow-y-auto">
-        <header className="sticky top-0 bg-canvas/85 backdrop-blur z-10 border-b border-hairline px-10 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-[13px] text-ink-mute">
-            <span>Say</span>
-            <span className="text-ink-soft">·</span>
-            <span>Local dictation</span>
+        <header className="sticky top-0 bg-book-cloth z-10 border-b border-cloud-light px-10 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-2.5 text-[12px] text-cloud-dark">
+            <span className="eyebrow">On-device</span>
+            <span className="text-cloud-mid">·</span>
+            <span>Audio never leaves this Mac</span>
           </div>
-          <div className="flex items-center gap-3 text-[12px] text-ink-mute">
-            <span className="hidden sm:inline">Hold</span>
-            <span className="kbd">Fn</span>
-            <span className="hidden sm:inline">to dictate</span>
+          <div className="flex items-center gap-3">
+            <HotkeyPill />
             <RecordingDot />
           </div>
         </header>
-        <div className="px-10 py-8 max-w-5xl">
+        <div className="px-10 py-12 max-w-container">
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/insights" element={<Insights />} />
+            <Route path="/models" element={<Models />} />
             <Route path="*" element={<Home />} />
           </Routes>
         </div>

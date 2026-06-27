@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              ink: '#141413', 'book-cloth': '#faf9f5', paper: '#f5f4ee',
+              'cloud-light': '#e8e6dc', 'cloud-mid': '#b0aea5', 'cloud-dark': '#6b6a63',
+              crail: { DEFAULT: '#d97757', deep: '#c66848' },
+              'slate-blue': '#6a9bcc', olive: '#788c5d', clay: '#bd8b6a',
+            },
+            fontFamily: {
+              serif: ['Fraunces', 'Georgia', 'serif'],
+              sans: ['Geist', 'Inter', 'system-ui', 'sans-serif'],
+              mono: ['"Geist Mono"', 'ui-monospace', 'monospace'],
+            },
+            letterSpacing: { caps: '0.04em' },
+            maxWidth: { prose: '680px', container: '1240px' },
+            borderRadius: { card: '8px' },
+          },
+        },
+      };
+    </script>
+    <style>
+      body { background:#faf9f5; color:#141413; font-family:'Geist',Inter,system-ui,sans-serif; font-size:15px; font-feature-settings:'kern','liga','calt'; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; margin:0; }
+      h1,h2,.display { font-family:'Fraunces',Georgia,serif; font-weight:400; font-variation-settings:'opsz' 144,'SOFT' 50,'WONK' 0; letter-spacing:-0.015em; line-height:1.1; }
+      .display { letter-spacing:-0.02em; line-height:1.05; }
+      .tnum { font-feature-settings:'tnum' 1,'kern' 1; }
+      .eyebrow { font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:.04em; color:#6b6a63; }
+      .card { background:#f5f4ee; border:1px solid #e8e6dc; border-radius:8px; }
+      .stat-number { font-family:'Fraunces',Georgia,serif; font-weight:400; line-height:1; font-feature-settings:'tnum' 1; }
+      .pill { display:inline-flex; align-items:center; gap:6px; border-radius:999px; padding:2px 10px; font-size:12px; font-weight:500; }
+      .pill-mute { background:#faf9f5; color:#6b6a63; border:1px solid #e8e6dc; }
+      .pill-accent { background:rgba(217,119,87,.10); color:#c66848; border:1px solid rgba(217,119,87,.20); }
+      .sidebar-item { display:flex; align-items:center; padding:8px 12px; border-radius:8px; font-size:14px; color:#6b6a63; }
+      .sidebar-item-active { background:#faf9f5; color:#141413; font-weight:500; position:relative; padding-left:16px; }
+      .sidebar-item-active::before { content:''; position:absolute; left:0; top:6px; bottom:6px; width:3px; border-radius:999px; background:#d97757; }
+      .sidebar-item-disabled { opacity:.4; }
+    </style>
+    <title>Say — Insights preview</title>
+  </head>
+  <body>
+    <div class="flex h-screen">
+      <!-- Sidebar -->
+      <aside class="w-[244px] shrink-0 h-full flex flex-col px-3 py-5 border-r border-cloud-light bg-paper">
+        <div class="px-3 mb-9 flex items-center gap-3">
+          <img src="./public/logo.png" alt="Say" class="w-9 h-9 rounded-md border border-cloud-light" />
+          <div class="leading-none">
+            <div class="font-serif text-[22px] tracking-tight text-ink">Say</div>
+            <div class="text-[11px] text-cloud-dark mt-1">Local · on-device</div>
+          </div>
+        </div>
+        <nav class="flex flex-col gap-0.5">
+          <div class="sidebar-item">Home</div>
+          <div class="sidebar-item-active">Insights</div>
+          <div class="sidebar-item-disabled sidebar-item">Dictionary <span class="ml-auto eyebrow text-[9px]">soon</span></div>
+          <div class="sidebar-item-disabled sidebar-item">Snippets <span class="ml-auto eyebrow text-[9px]">soon</span></div>
+          <div class="sidebar-item-disabled sidebar-item">Style <span class="ml-auto eyebrow text-[9px]">soon</span></div>
+          <div class="sidebar-item-disabled sidebar-item">Transforms <span class="ml-auto eyebrow text-[9px]">soon</span></div>
+          <div class="sidebar-item-disabled sidebar-item">Scratchpad <span class="ml-auto eyebrow text-[9px]">soon</span></div>
+        </nav>
+        <div class="mt-auto px-3 pt-5 border-t border-cloud-light">
+          <div class="eyebrow mb-2">Local-only</div>
+          <div class="text-[14px] text-ink leading-snug">1,284 transcripts on this Mac</div>
+          <div class="text-[12px] text-cloud-dark mt-1.5 leading-relaxed">Audio is never written to disk.</div>
+        </div>
+      </aside>
+
+      <!-- Main -->
+      <main class="flex-1 min-w-0 overflow-hidden">
+        <header class="bg-book-cloth border-b border-cloud-light px-10 py-4 flex items-center justify-between">
+          <div class="flex items-center gap-2.5 text-[12px] text-cloud-dark">
+            <span class="eyebrow">On-device</span>
+            <span class="text-cloud-mid">·</span>
+            <span>Audio never leaves this Mac</span>
+          </div>
+          <span class="pill bg-paper text-ink border border-cloud-light">
+            <span class="w-1.5 h-1.5 rounded-full bg-olive"></span> Fn ready
+          </span>
+        </header>
+
+        <div class="px-10 py-12 max-w-container">
+          <header class="mb-9">
+            <p class="eyebrow mb-3">How you dictate</p>
+            <h1 class="display text-[2.75rem]">Insights</h1>
+          </header>
+
+          <div class="flex items-center gap-6 mb-8 border-b border-cloud-light">
+            <button class="pb-3 -mb-px text-[14px] border-b-2 border-crail text-ink font-medium">Your Usage</button>
+            <button class="pb-3 -mb-px text-[14px] border-b-2 border-transparent text-cloud-dark">Your Voice</button>
+          </div>
+
+          <div class="flex flex-col gap-6">
+            <!-- KPI row -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div class="card p-5 flex flex-col gap-4 min-h-[168px]">
+                <div class="flex items-start justify-between gap-2">
+                  <div class="eyebrow">Words per minute</div>
+                  <span class="pill-accent">Top 8%</span>
+                </div>
+                <div class="flex items-end justify-between gap-3 mt-auto">
+                  <div>
+                    <div class="stat-number text-[2.5rem]">132</div>
+                    <div class="text-[12px] text-cloud-dark mt-2">last 30 days</div>
+                  </div>
+                  <div class="w-20 h-10 rounded-t-full" style="background:conic-gradient(from 270deg, #d97757 238deg, #e8e6dc 238deg 180deg, transparent 180deg)"></div>
+                </div>
+              </div>
+
+              <div class="card p-5 flex flex-col gap-4 min-h-[168px]">
+                <div class="flex items-start justify-between gap-2">
+                  <div class="eyebrow">Fixes made by Whisper</div>
+                  <span class="pill-mute">Coming soon</span>
+                </div>
+                <div class="flex items-end justify-between gap-3 mt-auto">
+                  <div>
+                    <div class="stat-number text-[2.5rem]">0</div>
+                    <div class="text-[12px] text-cloud-dark mt-2">words corrected · dictionary fixes</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card p-5 flex flex-col gap-4 min-h-[168px]">
+                <div class="flex items-start justify-between gap-2">
+                  <div class="eyebrow">Total words dictated</div>
+                  <span class="pill bg-crail/10 text-crail-deep border border-crail/20">↗ 12% this month</span>
+                </div>
+                <div class="flex items-end justify-between gap-3 mt-auto">
+                  <div>
+                    <div class="stat-number text-[2.5rem]">48,210</div>
+                    <div class="text-[12px] text-cloud-dark mt-2">9,640 in last 30 days</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Usage + heatmap -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div class="card p-5">
+                <div class="eyebrow mb-4">Desktop usage</div>
+                <ul id="gauges"></ul>
+              </div>
+              <div class="card p-5">
+                <div class="flex items-baseline justify-between mb-4">
+                  <div>
+                    <div class="eyebrow">Streak heatmap</div>
+                    <div class="text-[14px] text-ink mt-1.5">96 active days · 1,284 dictations</div>
+                  </div>
+                  <div class="flex items-center gap-1 text-[10px] text-cloud-dark">
+                    Less
+                    <span class="w-3 h-3 rounded-sm" style="background:#e8e6dc"></span>
+                    <span class="w-3 h-3 rounded-sm" style="background:#f0d9cd"></span>
+                    <span class="w-3 h-3 rounded-sm" style="background:#e0a989"></span>
+                    <span class="w-3 h-3 rounded-sm" style="background:#d97757"></span>
+                    <span class="w-3 h-3 rounded-sm" style="background:#b85c3e"></span>
+                    More
+                  </div>
+                </div>
+                <svg id="heatmap" height="105"></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      // Usage gauges
+      const usage = [
+        { label: 'Slack', count: 540, pct: 42 },
+        { label: 'Visual Studio Code', count: 360, pct: 28 },
+        { label: 'Google Chrome', count: 231, pct: 18 },
+        { label: 'Notes', count: 153, pct: 12 },
+      ];
+      document.getElementById('gauges').innerHTML = usage
+        .map(
+          (u) => `
+        <li class="flex items-center gap-3 py-2">
+          <div class="w-32 truncate text-[14px] text-ink">${u.label}</div>
+          <div class="flex-1 h-1.5 rounded-full bg-cloud-light overflow-hidden">
+            <div class="h-full rounded-full" style="width:${u.pct}%;background:#d97757"></div>
+          </div>
+          <div class="w-16 text-right text-[12px] text-cloud-dark tnum">${u.count} · ${u.pct}%</div>
+        </li>`,
+        )
+        .join('');
+
+      // Heatmap — 26 weeks x 7 days, crail ramp
+      const SCALE = ['#e8e6dc', '#f0d9cd', '#e0a989', '#d97757', '#b85c3e'];
+      const cell = 12, gap = 3, weeks = 26;
+      const svg = document.getElementById('heatmap');
+      svg.setAttribute('width', weeks * (cell + gap));
+      let seed = 7;
+      const rnd = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
+      let rects = '';
+      for (let w = 0; w < weeks; w++) {
+        for (let d = 0; d < 7; d++) {
+          const r = rnd();
+          const shade = r < 0.32 ? 0 : r < 0.5 ? 1 : r < 0.72 ? 2 : r < 0.9 ? 3 : 4;
+          rects += `<rect x="${w * (cell + gap)}" y="${d * (cell + gap)}" width="${cell}" height="${cell}" rx="2.5" fill="${SCALE[shade]}"></rect>`;
+        }
+      }
+      svg.innerHTML = rects;
+    </script>
+  </body>
+</html>

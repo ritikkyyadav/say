@@ -47,14 +47,20 @@ _lock = threading.Lock()
 # ── NSUserDefaults helpers ───────────────────────────────────────
 
 def _read_global() -> int | None:
-    """Return the current AppleFnUsageType, or None if unset."""
+    """Return the current AppleFnUsageType from NSGlobalDomain, or None if unset.
+
+    macOS reads this key from `NSGlobalDomain` / `kCFPreferencesAnyApplication`
+    on every Fn press.  `NSUserDefaults.standardUserDefaults()` writes go
+    to the *running app's* domain (com.say.dictation), which macOS will
+    never consult — so we use CFPreferences with the AnyApplication
+    domain explicitly.
+    """
     try:
-        from Foundation import NSUserDefaults
-        defaults = NSUserDefaults.standardUserDefaults()
-        # objectForKey_ returns None when unset; integerForKey_ returns
-        # 0 for both "unset" and "0", so we use the object form to
-        # distinguish.
-        value = defaults.objectForKey_(KEY)
+        from Foundation import (
+            CFPreferencesCopyAppValue,
+            kCFPreferencesAnyApplication,
+        )
+        value = CFPreferencesCopyAppValue(KEY, kCFPreferencesAnyApplication)
         if value is None:
             return None
         return int(value)
@@ -64,18 +70,46 @@ def _read_global() -> int | None:
 
 
 def _write_global(value: int | None) -> bool:
-    """Set AppleFnUsageType. Passing None removes the key."""
+    """Set AppleFnUsageType in NSGlobalDomain. Passing None removes the key.
+
+    Uses `CFPreferencesSetAppValue` with `kCFPreferencesAnyApplication`
+    so the write actually lands where macOS reads from.  Falls back to
+    shelling out to `/usr/bin/defaults write -g` if the CFPreferences
+    sync doesn't take effect (rare, but worth the safety net for the
+    only thing standing between the user and a working Fn key).
+    """
     try:
-        from Foundation import NSUserDefaults
-        defaults = NSUserDefaults.standardUserDefaults()
+        from Foundation import (
+            CFPreferencesAppSynchronize,
+            CFPreferencesSetAppValue,
+            kCFPreferencesAnyApplication,
+        )
+        # CFPreferencesSetAppValue accepts None to remove the key.
+        cf_value = None if value is None else int(value)
+        CFPreferencesSetAppValue(KEY, cf_value, kCFPreferencesAnyApplication)
+        CFPreferencesAppSynchronize(kCFPreferencesAnyApplication)
+    except Exception:
+        _log.exception('CFPreferences write of %s = %r failed', KEY, value)
+
+    # Verify the write reached NSGlobalDomain; if not, fall back to
+    # shelling out to `defaults` which always writes the right place.
+    try:
+        readback = _read_global()
+        if value is None and readback is None:
+            return True
+        if value is not None and readback == int(value):
+            return True
+        import subprocess
         if value is None:
-            defaults.removeObjectForKey_(KEY)
+            subprocess.run(['/usr/bin/defaults', 'delete', '-g', KEY], check=False)
         else:
-            defaults.setInteger_forKey_(int(value), KEY)
-        defaults.synchronize()
+            subprocess.run(
+                ['/usr/bin/defaults', 'write', '-g', KEY, '-int', str(int(value))],
+                check=False,
+            )
         return True
     except Exception:
-        _log.exception('Could not write %s = %r', KEY, value)
+        _log.exception('Fallback `defaults` write of %s = %r failed', KEY, value)
         return False
 
 

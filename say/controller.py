@@ -189,6 +189,7 @@ class DictationController:
         Args:
             mode: 'ptt' for push-to-talk, 'hands_free' for toggle mode.
         """
+        _log.info('start_recording called (mode=%s, current_state=%s)', mode, self.state)
         error_for_notify: str | None = None
         with self._lock:
             if self._recording or self.state in {
@@ -196,15 +197,18 @@ class DictationController:
                 DictationState.RECORDING,
                 DictationState.PROCESSING,
             }:
+                _log.info('start_recording rejected — already in %s', self.state)
                 return False
             self._recording = True
             self._recording_mode = mode
             try:
                 self.recorder.start()
+                _log.info('AudioRecorder.start() returned — mic stream open')
             except Exception as exc:
                 self._recording = False
                 self._recording_mode = None
                 error_for_notify = f'Microphone start failed: {exc}'
+                _log.exception('AudioRecorder.start() raised')
                 self._emit(DictationState.ERROR, error_for_notify, error=str(exc))
 
         if error_for_notify is not None:

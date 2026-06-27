@@ -10,7 +10,10 @@ const queryClient = new QueryClient({
     queries: {
       staleTime: 30_000,
       refetchOnWindowFocus: false,
-      retry: 1,
+      // Retry up to 4 times with exponential backoff (1s → 2s → 4s → 8s)
+      // so the UI recovers automatically when the engine is slow to boot.
+      retry: 4,
+      retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 10_000),
     },
   },
 });

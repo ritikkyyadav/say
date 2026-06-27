@@ -24,20 +24,22 @@ export function TranscriptCard({ row }: { row: Transcript }) {
   };
 
   return (
-    <article className="card group p-4 relative">
-      <div className="flex items-center justify-between text-[12px] text-ink-mute mb-2">
-        <span>{formatTimeOfDay(row.ts_utc)}</span>
+    <article className="card group p-5 relative">
+      <div className="flex items-center justify-between text-[12px] text-cloud-dark mb-2.5">
+        <span className="tnum">{formatTimeOfDay(row.ts_utc)}</span>
         <span className="opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             onClick={onCopy}
-            className="pill-mute hover:bg-accent/10 hover:text-accent"
+            className="pill-mute hover:text-crail-deep hover:border-crail/30"
             aria-label="Copy transcript"
           >
             {copied ? 'Copied' : 'Copy'}
           </button>
         </span>
       </div>
-      <p className="text-ink leading-snug whitespace-pre-wrap">{row.text}</p>
+      <p className="font-serif text-[1.0625rem] text-ink leading-relaxed whitespace-pre-wrap">
+        {row.text}
+      </p>
     </article>
   );
 }

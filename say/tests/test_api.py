@@ -87,6 +87,70 @@ class ApiTests(unittest.TestCase):
         grid = r2.json()
         self.assertEqual(len(grid), 14)
 
+    # ── Model management endpoints ───────────────────────────────────────
+
+    def test_models_requires_auth(self):
+        r = self.client.get('/models')
+        self.assertEqual(r.status_code, 401)
+
+    def test_models_lists_catalog_with_active(self):
+        r = self.client.get('/models?token=secret')
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertIn('active', body)
+        self.assertIn('cache_bytes', body)
+        self.assertGreaterEqual(len(body['models']), 4)
+        actives = [m for m in body['models'] if m['active']]
+        self.assertEqual(len(actives), 1)
+        self.assertEqual(actives[0]['id'], body['active'])
+
+    def test_set_active_rejects_unknown_model(self):
+        r = self.client.post(
+            '/models/active',
+            json={'id': 'no-such/model'},
+            headers={'Authorization': 'Bearer secret'},
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_download_rejects_unknown_model(self):
+        r = self.client.post('/models/no-such/model/download?token=secret')
+        self.assertEqual(r.status_code, 404)
+
+    def test_delete_active_model_is_refused(self):
+        active = self.client.get('/models?token=secret').json()['active']
+        r = self.client.delete(
+            f'/models/{active}',
+            headers={'Authorization': 'Bearer secret'},
+        )
+        self.assertEqual(r.status_code, 409)
+
+    def test_cancel_download_is_noop_when_idle(self):
+        r = self.client.post('/models/mlx-community/whisper-tiny-mlx/cancel?token=secret')
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()['cancelled'])
+
+    def test_download_insufficient_storage_returns_507(self):
+        import model_manager
+
+        # Empty temp cache so the target model reads as not-downloaded, and a
+        # stubbed free-space probe so the disk pre-check trips.
+        with TemporaryDirectory() as cache:
+            prev = os.environ.get('HF_HUB_CACHE')
+            orig_free = model_manager._free_bytes_for_cache
+            os.environ['HF_HUB_CACHE'] = cache
+            model_manager._free_bytes_for_cache = lambda: 1000
+            try:
+                r = self.client.post(
+                    '/models/mlx-community/whisper-tiny-mlx/download?token=secret'
+                )
+            finally:
+                model_manager._free_bytes_for_cache = orig_free
+                if prev is None:
+                    os.environ.pop('HF_HUB_CACHE', None)
+                else:
+                    os.environ['HF_HUB_CACHE'] = prev
+        self.assertEqual(r.status_code, 507)
+
 
 if __name__ == '__main__':
     unittest.main()

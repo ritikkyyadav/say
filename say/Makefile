@@ -13,7 +13,7 @@
 # but users must right-click → Open the first time to bypass Gatekeeper.
 
 VERSION       := 0.1.0
-APP_NAME      := Say
+APP_NAME      := Oceanus
 PYTHON        := $(if $(SAY_PYTHON),$(SAY_PYTHON),$(HOME)/.venvs/say/bin/python)
 PIP           := $(PYTHON) -m pip
 PYINSTALLER   := $(PYTHON) -m PyInstaller

@@ -1,13 +1,16 @@
 """Microphone capture for Say.
 
-The stream stays open between recordings while `config.PRE_ROLL_SECONDS > 0`
-so that a small ring buffer of the most-recent audio can seed the next
-recording. This eliminates first-syllable clipping from hotkey debounce
-and human reaction time. The macOS mic-active LED is the user's honest
-indicator that the stream is live; no audio is written to disk.
+The mic stream is opened on `start()` and closed on `stop()`/`cancel()`,
+so it is only live while a recording is actually in progress. The macOS
+mic-active indicator therefore lights up exactly when you are dictating
+and goes dark the instant you finish — never a persistent "always
+listening" stream. A short in-recording pre-roll ring buffer still
+guards against first-syllable clipping within a single capture; no audio
+is ever written to disk.
 """
 
 import threading
+import time
 from collections import deque
 
 import config
@@ -20,18 +23,27 @@ _log = get_logger('audio')
 # Number of amplitude samples to keep for waveform visualization.
 _AMPLITUDE_HISTORY_SIZE = 28
 
+# After a recording ends we keep the mic stream open this long before
+# closing it. A second dictation that starts within the window reuses the
+# already-open stream — no close/reopen churn (which CoreAudio punishes
+# with PaErrorCode -9986). Once idle past the window the stream closes and
+# the macOS mic-active indicator goes dark.
+_IDLE_CLOSE_DELAY = 0.6
+
 
 class AudioRecorder:
-    """Always-on monitor stream with on-demand recording capture.
+    """On-demand recording capture — the stream is live only mid-record.
 
-    Captures 16 kHz mono float32 audio. While `_capturing` is False the
-    stream still feeds the pre-roll ring buffer; while `_capturing` is
-    True it also accumulates samples into `_frames` for transcription.
+    Captures 16 kHz mono float32 audio. `start()` opens the InputStream;
+    `stop()`/`cancel()` close it again so the system mic indicator only
+    shows while a recording is in progress. Samples accumulate into
+    `_frames` for transcription while `_capturing` is True.
     """
 
     def __init__(self):
         self._frames: list[np.ndarray] = []
         self._stream: sd.InputStream | None = None
+        self._close_timer: threading.Timer | None = None
         self._lock = threading.Lock()
         self._amplitude_history = deque(
             [0.0] * _AMPLITUDE_HISTORY_SIZE, maxlen=_AMPLITUDE_HISTORY_SIZE
@@ -80,21 +92,101 @@ class AudioRecorder:
         ).start()
 
     def _ensure_stream_open(self) -> None:
-        """Open the InputStream if it is not already open. Idempotent."""
+        """Open the InputStream if it is not already open. Idempotent.
+
+        Because we close the device on every stop(), CoreAudio may still
+        be releasing it when the user dictates again a moment later — a
+        too-quick re-open then fails with PaErrorCode -9986 ("Internal
+        PortAudio error" / Audio Unit -10851). We retry with a short
+        backoff and, after a couple of misses, hard-reset PortAudio, so a
+        rapid second recording never surfaces a spurious mic error.
+        """
         if self._stream is not None:
             return
-        self._stream = sd.InputStream(
-            samplerate=config.SAMPLE_RATE,
-            channels=1,
-            dtype='float32',
-            blocksize=1024,
-            callback=self._callback,
-        )
-        self._stream.start()
+
+        last_exc: Exception | None = None
+        for attempt in range(6):
+            try:
+                stream = sd.InputStream(
+                    samplerate=config.SAMPLE_RATE,
+                    channels=1,
+                    dtype='float32',
+                    blocksize=1024,
+                    callback=self._callback,
+                )
+                stream.start()
+                self._stream = stream
+                if attempt:
+                    _log.info('Mic stream opened on retry %d', attempt)
+                return
+            except Exception as exc:
+                last_exc = exc
+                _log.warning(
+                    'InputStream open failed (attempt %d/6): %s', attempt + 1, exc
+                )
+                # Let CoreAudio finish releasing the device from the prior close.
+                time.sleep(0.1 * (attempt + 1))
+                # Persistent failure → hard-reset PortAudio and try again.
+                if attempt == 2:
+                    try:
+                        sd._terminate()
+                        sd._initialize()
+                        _log.info('Reset PortAudio after repeated open failures')
+                    except Exception:
+                        _log.debug('PortAudio reset failed', exc_info=True)
+
+        assert last_exc is not None
+        raise last_exc
+
+    def _close_stream(self) -> None:
+        """Stop and close the InputStream so the mic indicator goes dark.
+
+        Must run OUTSIDE `self._lock`: sounddevice may fire the audio
+        callback during stop()/close(), and that callback also takes the
+        lock. Safe to call when the stream is already closed.
+        """
+        stream = self._stream
+        self._stream = None
+        if stream is None:
+            return
+        try:
+            stream.stop()
+        except Exception:
+            pass
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+    def _cancel_close_timer(self) -> None:
+        """Cancel a pending deferred close (called when recording resumes)."""
+        timer = self._close_timer
+        self._close_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _schedule_close(self) -> None:
+        """Close the stream after `_IDLE_CLOSE_DELAY` unless we record again."""
+        self._cancel_close_timer()
+        timer = threading.Timer(_IDLE_CLOSE_DELAY, self._deferred_close)
+        timer.daemon = True
+        self._close_timer = timer
+        timer.start()
+
+    def _deferred_close(self) -> None:
+        """Timer callback: close the mic only if still idle."""
+        with self._lock:
+            if self._capturing:
+                return  # a new recording started within the window — keep it
+            self._close_timer = None
+        self._close_stream()
 
     def start(self):
         """Begin a recording. Pre-roll ring buffer is prepended."""
         with self._lock:
+            # Keep any still-open stream from a recent recording — reusing
+            # it avoids a close/reopen cycle (and the -9986 race).
+            self._cancel_close_timer()
             self._frames = []
             self._max_frames_dispatched = False
             self._amplitude_history = deque(
@@ -163,27 +255,33 @@ class AudioRecorder:
             self._dispatch_event('stream_error', f'Audio callback failed: {exc}')
 
     def stop(self) -> np.ndarray:
-        """Finish a recording. Returns the captured audio.
+        """Finish a recording and return the captured audio.
 
-        The underlying stream stays open so the pre-roll buffer keeps
-        filling for the next start(). Use shutdown() to fully close.
+        Closes the mic stream so the macOS mic-active indicator turns off
+        the instant recording ends. The pre-roll buffer is cleared so a
+        later start() never prepends stale audio from this session.
         """
         with self._lock:
             self._capturing = False
+            self._pre_roll_buffer.clear()
             if not self._frames:
-                return np.array([], dtype='float32')
-            audio = np.concatenate(self._frames, axis=0).flatten()
+                audio = np.array([], dtype='float32')
+            else:
+                audio = np.concatenate(self._frames, axis=0).flatten()
             self._frames = []
-            return audio
+        self._schedule_close()
+        return audio
 
     def cancel(self) -> None:
-        """Cancel an active recording and discard captured samples."""
+        """Cancel an active recording, discard samples, close the mic."""
         with self._lock:
             self._capturing = False
             self._frames = []
+            self._pre_roll_buffer.clear()
             self._amplitude_history = deque(
                 [0.0] * _AMPLITUDE_HISTORY_SIZE, maxlen=_AMPLITUDE_HISTORY_SIZE
             )
+        self._schedule_close()
 
     def shutdown(self) -> None:
         """Tear down the audio stream entirely. Call once on app quit.
@@ -193,20 +291,12 @@ class AudioRecorder:
         new system default.
         """
         with self._lock:
+            self._cancel_close_timer()
             self._capturing = False
             self._frames = []
             self._pre_roll_buffer.clear()
 
-        if self._stream is not None:
-            try:
-                self._stream.stop()
-            except Exception:
-                pass
-            try:
-                self._stream.close()
-            except Exception:
-                pass
-            self._stream = None
+        self._close_stream()
 
     @property
     def amplitude_history(self) -> list[float]:

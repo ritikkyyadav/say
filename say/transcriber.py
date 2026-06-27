@@ -94,6 +94,16 @@ _HALLUCINATION_FILTER: dict[str, set[str]] = {
 }
 
 
+# Punctuation/whitespace Whisper sprinkles around a hallucinated phrase
+# ("Thank you.", " Thank you! ", "Thanks…"). Stripping these before the
+# membership test means the filter set can stay punctuation-free.
+_FILTER_STRIP = ' \t\n.!?,…"\'`-'
+
+
+def _normalize_for_filter(text: str) -> str:
+    return text.lower().strip().strip(_FILTER_STRIP).strip()
+
+
 def _build_active_filter(language: str | None) -> set[str]:
     base = set(_HALLUCINATION_FILTER['language_neutral'])
     if language:
@@ -103,7 +113,7 @@ def _build_active_filter(language: str | None) -> set[str]:
         # Auto-detect mode — apply every language filter we know about.
         for lang_set in _HALLUCINATION_FILTER.values():
             base.update(lang_set)
-    return {phrase.lower().strip() for phrase in base}
+    return {_normalize_for_filter(phrase) for phrase in base}
 
 
 class Transcriber:
@@ -276,7 +286,7 @@ class Transcriber:
         _log.info('%.1fs audio -> %.1fs inference', duration, elapsed)
 
         active_filter = _build_active_filter(config.LANGUAGE)
-        if text.lower().strip() in active_filter:
+        if _normalize_for_filter(text) in active_filter:
             return ''
 
         return text
