@@ -2,13 +2,11 @@
 #
 # A two-state floating window at bottom-center of the screen:
 #
-#   DORMANT — collapsed to a small glowing dot when the app is idle
-#             (mirrors Wispr Flow's "shrink to dot" idle behavior).
-#   ACTIVE  — pill-shaped with a dotted halftone sphere that ripples
-#             with mic amplitude, plus cancel (✕) / finish (✓) buttons.
-#
-# The dot blooms into the sphere with a fluid ease-out and a soft wake
-# chime; on completion it collapses back to the dot.
+#   DORMANT — collapsed to a small glowing dot when the app is idle.
+#   ACTIVE  — a dark charcoal pill with a clean white waveform that
+#             ripples with mic amplitude, plus a ghost cancel (✕) and a
+#             solid-white finish (✓) button. Monochrome on dark, per the
+#             design system (see brand.OVERLAY_*).
 #
 # Uses PyObjC (AppKit/Cocoa) for native macOS rendering.
 
@@ -21,7 +19,7 @@ from collections import deque
 from collections.abc import Callable
 from enum import Enum
 
-import numpy as np
+import brand
 import objc
 from AppKit import (
     NSBezierPath,
@@ -39,67 +37,67 @@ from AppKit import (
 from logging_setup import get_logger
 from Quartz import CGColorCreateGenericRGB
 
-import brand
-
 _log = get_logger('overlay')
 
 # ── Overlay sizing ──────────────────────────────────────────────
-OVERLAY_WIDTH = 320
-OVERLAY_HEIGHT = 120
-CORNER_RADIUS = 22.0
-BUTTON_SIZE = 28
-ANIMATION_FPS = 30
-AMPLITUDE_BUFFER_SIZE = 28
+# Compact pill matching the reference: a tight capsule that hugs the
+# waveform, flanked by two small circular controls. Half the footprint
+# of the old 280×76 slab so it reads as a polished HUD, not a banner.
+OVERLAY_WIDTH = 178
+OVERLAY_HEIGHT = 46
+CORNER_RADIUS = 23.0          # pill — radius == half height
+BUTTON_SIZE = 26
+ANIMATION_FPS = 60            # 60fps for buttery-smooth motion
+AMPLITUDE_BUFFER_SIZE = 18
 
 # ── Dormant dot mode ────────────────────────────────────────────
-DORMANT_DOT_RADIUS = 5.5     # rendered dot radius when fully collapsed
-DORMANT_BREATHE_RATE = 1.4   # rad/sec for the slow idle pulse
-TRANSITION_DURATION = 0.32   # seconds — wake-up bloom time
-COLLAPSE_DURATION = 0.45     # seconds — settling back to dot is slower
+DORMANT_DOT_RADIUS = 4.5
+DORMANT_BREATHE_RATE = 1.4
+TRANSITION_DURATION = 0.30
+COLLAPSE_DURATION = 0.42
 
-# ── Orb (dotted halftone sphere) ────────────────────────────────
-SPHERE_DOT_COUNT = 520
-SPHERE_RADIUS_PX = 44.0       # base radius at full bloom
-SPHERE_AMP_GAIN = 0.16        # radial expansion at full amplitude
-SPHERE_RIPPLE_GAIN = 0.10     # surface ripple amplitude
-SPHERE_ROT_SPEED_Y = 0.014    # rad/frame around y-axis
-SPHERE_WOBBLE_SPEED = 0.006   # rad/frame x-axis wobble
-SPHERE_WOBBLE_RANGE = 0.20    # peak x-axis tilt (rad)
+# ── Waveform bars ───────────────────────────────────────────────
+# More, thinner bars packed tightly = a denser, more "voice-like"
+# signature. Heights are driven by a critically-damped spring (see
+# _WaveformView.tick) so each bar settles with an organic, fluid bounce
+# rather than a flat exponential glide.
+WAVE_BAR_COUNT = 18
+WAVE_BAR_WIDTH = 2.4
+WAVE_BAR_GAP = 2.7
+WAVE_BAR_MIN_H = 3.0          # smallest visible bar
+WAVE_BAR_MAX_H = 26.0         # tallest possible
+WAVE_BAR_RADIUS = 1.2         # rounded bar tips
 
-# Three-stop color gradient running top→bottom across the sphere.
-ORB_COLOR_TOP = np.array([0.96, 0.42, 0.72])  # bright pink
-ORB_COLOR_MID = np.array([0.70, 0.25, 0.82])  # magenta
-ORB_COLOR_BOT = np.array([0.30, 0.18, 0.66])  # deep purple/indigo
+# Spring constants for per-bar height. Tuned for a lively, slightly
+# under-damped settle — enough overshoot to feel alive, not jittery.
+BAR_SPRING_STIFFNESS = 220.0
+BAR_SPRING_DAMPING = 24.0
 
-# A short, soft built-in macOS chime. Tink/Pop both work; Tink is
-# the gentlest. Falls back silently if the file is missing.
+# ── Overlay palette — dark charcoal pill, monochrome controls ────
+# The overlay "stays dark per design choice" (mirrors brand.OVERLAY_*).
+# A near-black pill carries a white waveform. The finish button is a
+# solid white disc (primary affordance); cancel is a translucent ghost
+# disc (secondary) — exactly the reference look, no rose anywhere.
+PILL_BG    = (0.137, 0.141, 0.157)   # #232428  charcoal pill body
+PILL_RIM   = (1.000, 1.000, 1.000)   # faint top rim (used at low alpha)
+WAVE       = (0.965, 0.969, 0.980)   # #F6F7FA  near-white waveform bars
+GHOST      = (1.000, 1.000, 1.000)   # cancel disc (low alpha) + its ✕ glyph
+FINISH     = (0.965, 0.969, 0.980)   # finish disc — solid white
+GLYPH_DARK = (0.094, 0.098, 0.114)   # #18191D  dark ✓ on the white disc
+TEXT_DIM   = (0.831, 0.875, 0.937)   # mode text on the pill
+
+# A short, soft built-in macOS chime.
 WAKE_SOUND_PATH = '/System/Library/Sounds/Tink.aiff'
 
 # Window levels
-NSFloatingWindowLevel = 5  # CGWindowLevelKey = kCGFloatingWindowLevelKey
+NSFloatingWindowLevel = 5
 
 
 class OverlayState(str, Enum):
-    HIDDEN = 'hidden'        # off-screen entirely
-    DORMANT = 'dormant'      # small idle dot
-    RECORDING = 'recording'  # full pill, mic-driven orb
-    PROCESSING = 'processing'  # full pill, idle-pulse orb
-
-
-def _fibonacci_sphere(n: int) -> np.ndarray:
-    """Evenly distribute `n` points on a unit sphere via Fibonacci spiral.
-
-    Returns an (n, 3) float array of unit-sphere xyz coordinates. Even
-    coverage matters here — clustered points show as visible streaks
-    when the sphere rotates.
-    """
-    indices = np.arange(0, n, dtype=np.float64) + 0.5
-    phi = np.arccos(1.0 - 2.0 * indices / n)
-    theta = math.pi * (1.0 + 5.0 ** 0.5) * indices
-    x = np.cos(theta) * np.sin(phi)
-    y = np.sin(theta) * np.sin(phi)
-    z = np.cos(phi)
-    return np.column_stack([x, y, z])
+    HIDDEN = 'hidden'
+    DORMANT = 'dormant'
+    RECORDING = 'recording'
+    PROCESSING = 'processing'
 
 
 def _ease_out_cubic(t: float) -> float:
@@ -107,30 +105,43 @@ def _ease_out_cubic(t: float) -> float:
     return 1.0 - (1.0 - t) ** 3
 
 
-class _OrbView(NSView):
-    """Custom NSView that draws an animated dotted sphere whose size
-    blends from a single glowing dot to a full sphere via `bloom`,
-    and whose surface ripples with microphone amplitude."""
+class _WaveformView(NSView):
+    """Custom NSView that draws either a small dormant dot or a row of
+    rounded vertical bars whose heights respond to mic amplitude.
+
+    Class name intentionally mirrors the previous `_OrbView` so the rest
+    of the file (and any external references) keep working without a
+    rename cascade.
+    """
 
     def initWithFrame_(self, frame):
-        self = objc.super(_OrbView, self).initWithFrame_(frame)
+        self = objc.super(_WaveformView, self).initWithFrame_(frame)
         if self is None:
             return None
         self._amplitude = 0.0
         self._target_amplitude = 0.0
-        self._phase = 0.0
-        self._wobble_phase = 0.0
         self._breathe_phase = 0.0
-        self._bloom = 0.0   # 0 = dot, 1 = full sphere
+        self._processing_phase = 0.0
+        self._bloom = 0.0
         self._state = OverlayState.HIDDEN
-        self._unit_sphere = _fibonacci_sphere(SPHERE_DOT_COUNT)
+        # Per-bar state: spring-driven height (0..1), its velocity, and a
+        # small phase offset so bars don't all peak in lockstep.
+        self._bar_levels = [0.0] * WAVE_BAR_COUNT
+        self._bar_vel = [0.0] * WAVE_BAR_COUNT
+        self._bar_phase = [i * 0.42 for i in range(WAVE_BAR_COUNT)]
+        # Center-weighted envelope: bars taller in the middle, tapering to
+        # the edges — the natural bell shape of the reference waveform.
+        center = (WAVE_BAR_COUNT - 1) / 2.0
+        self._bar_env = [
+            0.45 + 0.55 * (1.0 - (abs(i - center) / center) ** 1.6)
+            for i in range(WAVE_BAR_COUNT)
+        ]
         return self
 
     def isFlipped(self):
         return False
 
     def set_amplitude(self, amplitude: float) -> None:
-        """Set target amplitude (0.0–1.0). Actual value smooths toward it."""
         self._target_amplitude = max(0.0, min(1.0, amplitude))
 
     def set_state(self, state: OverlayState) -> None:
@@ -138,147 +149,102 @@ class _OrbView(NSView):
         self.setNeedsDisplay_(True)
 
     def set_bloom(self, bloom: float) -> None:
-        """Set the dot↔sphere blend. 0 = pure dot, 1 = full sphere."""
         self._bloom = max(0.0, min(1.0, bloom))
         self.setNeedsDisplay_(True)
 
     def tick(self, dt: float = 1.0 / ANIMATION_FPS) -> None:
-        """Advance animation by one frame."""
-        self._phase += SPHERE_ROT_SPEED_Y
-        self._wobble_phase += SPHERE_WOBBLE_SPEED
         self._breathe_phase += DORMANT_BREATHE_RATE * dt
-        # Smooth amplitude via exponential moving average.
-        self._amplitude += (self._target_amplitude - self._amplitude) * 0.20
+        self._processing_phase += 2.4 * dt
+        # Smooth amplitude with an EMA so peaks decay naturally. Slightly
+        # snappier attack than decay so the wave "jumps" to your voice.
+        amp_k = 0.34 if self._target_amplitude > self._amplitude else 0.18
+        self._amplitude += (self._target_amplitude - self._amplitude) * amp_k
+
+        amp = self._amplitude
+        for i in range(WAVE_BAR_COUNT):
+            self._bar_phase[i] += dt * (3.0 + 0.18 * i)
+            wobble = 0.5 + 0.5 * math.sin(self._bar_phase[i])
+            # Voice-driven height, shaped by the center-weighted envelope.
+            target = amp * (0.55 + 0.45 * wobble) * self._bar_env[i]
+            # When processing, run a travelling wave across the bars.
+            if self._state == OverlayState.PROCESSING:
+                target = (0.16 + 0.12 * math.sin(self._processing_phase + i * 0.55)) \
+                    * self._bar_env[i]
+            elif self._state != OverlayState.RECORDING:
+                # Idle: a barely-there breathing shimmer.
+                target = (0.05 + 0.04 * math.sin(self._breathe_phase + i * 0.7)) \
+                    * self._bar_env[i]
+
+            # Critically-damped spring → fluid, organic settle with a hint
+            # of overshoot. Far nicer than a flat exponential lerp.
+            accel = (target - self._bar_levels[i]) * BAR_SPRING_STIFFNESS \
+                - self._bar_vel[i] * BAR_SPRING_DAMPING
+            self._bar_vel[i] += accel * dt
+            self._bar_levels[i] += self._bar_vel[i] * dt
+            # Clamp so overshoot never clips outside the pill.
+            if self._bar_levels[i] < 0.0:
+                self._bar_levels[i] = 0.0
+                self._bar_vel[i] *= -0.3
+            elif self._bar_levels[i] > 1.0:
+                self._bar_levels[i] = 1.0
+                self._bar_vel[i] *= -0.3
+
         self.setNeedsDisplay_(True)
 
     def drawRect_(self, rect):
         bounds = self.bounds()
         cx = bounds.size.width / 2.0
         cy = bounds.size.height / 2.0
+        eased_bloom = _ease_out_cubic(self._bloom)
 
-        bloom = self._bloom
-
-        if self._state == OverlayState.RECORDING:
-            amp = self._amplitude
-        elif self._state == OverlayState.PROCESSING:
-            amp = 0.18 + 0.10 * math.sin(self._phase * 2.5)
-        else:
-            # DORMANT / HIDDEN — slow ambient breathe so the dot feels alive.
-            amp = 0.10 + 0.07 * math.sin(self._breathe_phase)
-
-        # Radius blends from dormant dot up to full sphere.
-        eased_bloom = _ease_out_cubic(bloom)
-        effective_radius = (
-            DORMANT_DOT_RADIUS
-            + (SPHERE_RADIUS_PX - DORMANT_DOT_RADIUS) * eased_bloom
-        )
-
-        # Rotate around Y, then a small wobble around X for life.
-        cos_y = math.cos(self._phase)
-        sin_y = math.sin(self._phase)
-        wobble = SPHERE_WOBBLE_RANGE * math.sin(self._wobble_phase)
-        cos_x = math.cos(wobble)
-        sin_x = math.sin(wobble)
-
-        unit = self._unit_sphere
-        ux = unit[:, 0]
-        uy = unit[:, 1]
-        uz = unit[:, 2]
-
-        x1 = ux * cos_y + uz * sin_y
-        y1 = uy
-        z1 = -ux * sin_y + uz * cos_y
-
-        x2 = x1
-        y2 = y1 * cos_x - z1 * sin_x
-        z2 = y1 * sin_x + z1 * cos_x
-
-        # Surface ripple — only meaningful once bloomed, scaled by bloom.
-        ripple = (
-            SPHERE_RIPPLE_GAIN * amp * eased_bloom
-            * np.sin(y2 * 6.0 + self._phase * 4.0)
-        )
-        radius = effective_radius * (1.0 + SPHERE_AMP_GAIN * amp + ripple)
-
-        screen_x = cx + x2 * radius
-        screen_y = cy + y2 * radius
-
-        # Vertical color gradient driven by rotated y.
-        gradient_t = (y2 + 1.0) * 0.5  # 0 bottom → 1 top
-        t1 = np.clip(gradient_t * 2.0, 0.0, 1.0)
-        t2 = np.clip((gradient_t - 0.5) * 2.0, 0.0, 1.0)
-        below = gradient_t < 0.5
-
-        r_lower = ORB_COLOR_BOT[0] + (ORB_COLOR_MID[0] - ORB_COLOR_BOT[0]) * t1
-        g_lower = ORB_COLOR_BOT[1] + (ORB_COLOR_MID[1] - ORB_COLOR_BOT[1]) * t1
-        b_lower = ORB_COLOR_BOT[2] + (ORB_COLOR_MID[2] - ORB_COLOR_BOT[2]) * t1
-        r_upper = ORB_COLOR_MID[0] + (ORB_COLOR_TOP[0] - ORB_COLOR_MID[0]) * t2
-        g_upper = ORB_COLOR_MID[1] + (ORB_COLOR_TOP[1] - ORB_COLOR_MID[1]) * t2
-        b_upper = ORB_COLOR_MID[2] + (ORB_COLOR_TOP[2] - ORB_COLOR_MID[2]) * t2
-        r_col = np.where(below, r_lower, r_upper)
-        g_col = np.where(below, g_lower, g_upper)
-        b_col = np.where(below, b_lower, b_upper)
-
-        # Depth shading.
-        depth = (z2 + 1.0) * 0.5
-        dot_radius = 0.45 + 1.05 * depth
-        alpha = 0.10 + 0.78 * depth
-        alpha += 0.18 * amp * depth  # mic boost on the lit hemisphere
-        # Cluster fully fades out at bloom=0 so the dormant accent dot
-        # below isn't drowned by 520 stacked points.
-        alpha = alpha * eased_bloom
-        np.clip(alpha, 0.0, 1.0, out=alpha)
-
-        # Dormant accent dot — a single soft gradient dot that's visible
-        # when collapsed and crossfades out as we bloom into the sphere.
+        # Dormant accent dot — visible when collapsed, fades out as we bloom.
         dormant_alpha = 1.0 - eased_bloom
         if dormant_alpha > 0.01:
-            self._draw_accent_dot(cx, cy, amp, dormant_alpha)
+            self._draw_dormant_dot(cx, cy, dormant_alpha)
 
-        if eased_bloom < 0.02:
-            return  # nothing more to draw — pure dormant mode
+        if eased_bloom < 0.05:
+            return
 
-        order = np.argsort(z2)
-
-        for i in order:
-            if z2[i] < -0.15:
-                # Cull deep-back dots — invisible behind the front face.
-                continue
-            sx = float(screen_x[i])
-            sy = float(screen_y[i])
-            r = float(dot_radius[i])
-            color = NSColor.colorWithCalibratedRed_green_blue_alpha_(
-                float(r_col[i]),
-                float(g_col[i]),
-                float(b_col[i]),
-                float(alpha[i]),
-            )
-            color.setFill()
-            dot_rect = NSMakeRect(sx - r, sy - r, r * 2.0, r * 2.0)
-            NSBezierPath.bezierPathWithOvalInRect_(dot_rect).fill()
-
-    def _draw_accent_dot(self, cx: float, cy: float, amp: float, alpha: float) -> None:
-        """Single gradient dot used in dormant mode (and crossfading
-        out as the sphere blooms in). Halo + bright pink core."""
-        # Slight pulse with the breathe phase / mic amplitude.
-        radius = DORMANT_DOT_RADIUS * (1.0 + 0.20 * amp)
-
-        halo_r = radius * 2.0
-        halo_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(
-            float(ORB_COLOR_TOP[0]),
-            float(ORB_COLOR_TOP[1]),
-            float(ORB_COLOR_TOP[2]),
-            0.30 * alpha,
+        total_w = (
+            WAVE_BAR_COUNT * WAVE_BAR_WIDTH
+            + (WAVE_BAR_COUNT - 1) * WAVE_BAR_GAP
         )
-        halo_color.setFill()
+        left = cx - total_w / 2.0
+
+        wave_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(
+            WAVE[0], WAVE[1], WAVE[2], 0.98 * eased_bloom,
+        )
+        wave_color.setFill()
+
+        for i in range(WAVE_BAR_COUNT):
+            level = self._bar_levels[i]
+            h = WAVE_BAR_MIN_H + (WAVE_BAR_MAX_H - WAVE_BAR_MIN_H) * level
+            x = left + i * (WAVE_BAR_WIDTH + WAVE_BAR_GAP)
+            y = cy - h / 2.0
+            bar_rect = NSMakeRect(x, y, WAVE_BAR_WIDTH, h)
+            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                bar_rect, WAVE_BAR_RADIUS, WAVE_BAR_RADIUS,
+            ).fill()
+
+    def _draw_dormant_dot(self, cx: float, cy: float, alpha: float) -> None:
+        """A small white dot ringed by a soft dark halo, so the idle
+        indicator stays legible on light or dark desktops alike."""
+        amp = self._amplitude
+        radius = DORMANT_DOT_RADIUS * (1.0 + 0.18 * amp)
+
+        halo_r = radius * 2.4
+        halo = NSColor.colorWithCalibratedRed_green_blue_alpha_(
+            PILL_BG[0], PILL_BG[1], PILL_BG[2], 0.40 * alpha,
+        )
+        halo.setFill()
         NSBezierPath.bezierPathWithOvalInRect_(
             NSMakeRect(cx - halo_r, cy - halo_r, halo_r * 2.0, halo_r * 2.0)
         ).fill()
 
-        core_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(
-            0.96, 0.58, 0.80, alpha,
+        core = NSColor.colorWithCalibratedRed_green_blue_alpha_(
+            WAVE[0], WAVE[1], WAVE[2], alpha,
         )
-        core_color.setFill()
+        core.setFill()
         NSBezierPath.bezierPathWithOvalInRect_(
             NSMakeRect(cx - radius, cy - radius, radius * 2.0, radius * 2.0)
         ).fill()
@@ -288,7 +254,7 @@ class DictationOverlay:
     """Floating macOS overlay window for dictation feedback.
 
     Lives at bottom-center as a small dot when idle and blooms into a
-    full pill with the dotted-sphere visualization while recording.
+    dark charcoal pill with a white waveform while recording.
     """
 
     def __init__(
@@ -299,14 +265,13 @@ class DictationOverlay:
         self._on_cancel = on_cancel
         self._on_finish = on_finish
         self._window = None
-        self._orb_view = None
+        self._wave_view = None
         self._bg_view = None
         self._cancel_btn = None
         self._finish_btn = None
         self._mode_label = None
         self._timer = None
         self._state = OverlayState.HIDDEN
-        # Bloom drives the visual transition: 0 = dot, 1 = full pill.
         self._bloom = 0.0
         self._target_bloom = 0.0
         self._wake_sound = None
@@ -322,13 +287,6 @@ class DictationOverlay:
 
     @staticmethod
     def _active_screen():
-        """Return the NSScreen the user is currently looking at.
-
-        We use the cursor position as a proxy for "active display" — a
-        polished alternative would be to ask the frontmost app for its
-        key-window screen, but that requires an entitlement on macOS 14+.
-        Falls back to mainScreen() if no screen contains the cursor.
-        """
         try:
             from AppKit import NSEvent
             cursor = NSEvent.mouseLocation()
@@ -347,7 +305,7 @@ class DictationOverlay:
     def _frame_for_screen(screen):
         screen_frame = screen.visibleFrame()
         x = (screen_frame.size.width - OVERLAY_WIDTH) / 2.0 + screen_frame.origin.x
-        y = screen_frame.origin.y + 40  # 40px from bottom
+        y = screen_frame.origin.y + 36
         return NSMakeRect(x, y, OVERLAY_WIDTH, OVERLAY_HEIGHT)
 
     def _reposition_for_active_screen(self) -> None:
@@ -360,7 +318,6 @@ class DictationOverlay:
         self._window.setFrame_display_(frame, False)
 
     def _build_window(self) -> None:
-        """Create the overlay window and its subviews."""
         screen = self._active_screen()
         if screen is None:
             _log.error('No screen found for overlay.')
@@ -371,24 +328,22 @@ class DictationOverlay:
         self._window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame,
             NSWindowStyleMaskBorderless,
-            2,  # NSBackingStoreBuffered
+            2,
             False,
         )
         self._window.setLevel_(NSFloatingWindowLevel + 10)
         self._window.setOpaque_(False)
         self._window.setBackgroundColor_(NSColor.clearColor())
         self._window.setHasShadow_(False)
-        # Mouse events flip on/off based on mode. Start ignored — when
-        # we're hidden no clicks should land here.
         self._window.setIgnoresMouseEvents_(True)
         self._window.setCollectionBehavior_(
-            (1 << 0) | (1 << 4)  # canJoinAllSpaces | fullScreenAuxiliary
+            (1 << 0) | (1 << 4)
         )
         self._window.setAlphaValue_(0.0)
 
         content = self._window.contentView()
 
-        # Background view with rounded corners — fades in as we bloom.
+        # Dark charcoal pill background — fades in as we bloom.
         bg_view = NSView.alloc().initWithFrame_(
             NSMakeRect(0, 0, OVERLAY_WIDTH, OVERLAY_HEIGHT),
         )
@@ -396,68 +351,71 @@ class DictationOverlay:
         bg_view.setWantsLayer_(True)
         layer = bg_view.layer()
         if layer:
-            bg_r, bg_g, bg_b = brand.OVERLAY_BG
-            br_r, br_g, br_b = brand.OVERLAY_BORDER
             layer.setBackgroundColor_(
-                CGColorCreateGenericRGB(bg_r, bg_g, bg_b, 0.93)
+                CGColorCreateGenericRGB(
+                    PILL_BG[0], PILL_BG[1], PILL_BG[2], 0.98,
+                ),
             )
             layer.setCornerRadius_(CORNER_RADIUS)
-            layer.setBorderWidth_(0.5)
+            layer.setBorderWidth_(0.8)
             layer.setBorderColor_(
-                CGColorCreateGenericRGB(br_r, br_g, br_b, 0.45)
+                CGColorCreateGenericRGB(
+                    PILL_RIM[0], PILL_RIM[1], PILL_RIM[2], 0.08,
+                ),
             )
             layer.setOpacity_(0.0)
         self._bg_view = bg_view
 
-        # Orb view — fills the central column between the two buttons.
-        side_pad = BUTTON_SIZE + 18
-        orb_x = side_pad
-        orb_w = OVERLAY_WIDTH - 2 * side_pad
-        orb_y = 14
-        orb_h = OVERLAY_HEIGHT - orb_y - 18
-        self._orb_view = _OrbView.alloc().initWithFrame_(
-            NSMakeRect(orb_x, orb_y, orb_w, orb_h),
+        # Waveform view — fills the central column between the buttons.
+        side_pad = BUTTON_SIZE + 12
+        wave_x = side_pad
+        wave_w = OVERLAY_WIDTH - 2 * side_pad
+        wave_y = 5
+        wave_h = OVERLAY_HEIGHT - wave_y - 5
+        self._wave_view = _WaveformView.alloc().initWithFrame_(
+            NSMakeRect(wave_x, wave_y, wave_w, wave_h),
         )
-        content.addSubview_(self._orb_view)
+        content.addSubview_(self._wave_view)
 
-        # Cancel button (vertically centered, left edge)
+        # Cancel button — translucent ghost disc with a white ✕.
+        cancel_y = (OVERLAY_HEIGHT - BUTTON_SIZE) / 2
         self._cancel_btn = self._make_button(
-            NSMakeRect(
-                10,
-                (OVERLAY_HEIGHT - BUTTON_SIZE) / 2,
-                BUTTON_SIZE,
-                BUTTON_SIZE,
-            ),
+            NSMakeRect(8, cancel_y, BUTTON_SIZE, BUTTON_SIZE),
             title='✕',
             action=self._cancel_clicked,
-            bg_color=brand.color(brand.OVERLAY_RED, alpha=0.72),
+            fill_rgb=GHOST,
+            fill_alpha=0.14,
+            glyph_rgb=GHOST,
+            rim_alpha=0.18,
         )
         content.addSubview_(self._cancel_btn)
 
-        # Finish button (vertically centered, right edge)
+        # Finish button — solid white disc with a dark ✓ (primary action).
+        finish_y = (OVERLAY_HEIGHT - BUTTON_SIZE) / 2
         self._finish_btn = self._make_button(
             NSMakeRect(
-                OVERLAY_WIDTH - BUTTON_SIZE - 10,
-                (OVERLAY_HEIGHT - BUTTON_SIZE) / 2,
+                OVERLAY_WIDTH - BUTTON_SIZE - 8,
+                finish_y,
                 BUTTON_SIZE,
                 BUTTON_SIZE,
             ),
             title='✓',
             action=self._finish_clicked,
-            bg_color=brand.color(brand.OVERLAY_GREEN, alpha=0.72),
+            fill_rgb=FINISH,
+            fill_alpha=1.0,
+            glyph_rgb=GLYPH_DARK,
+            rim_alpha=0.0,
         )
         content.addSubview_(self._finish_btn)
 
-        # Mode indicator label (bottom strip under the orb)
         self._mode_label = self._make_label(
-            NSMakeRect(orb_x, 2, orb_w, 12),
+            NSMakeRect(wave_x, 0, wave_w, 0),
             text='',
-            font_size=9.0,
-            color=brand.color(brand.OVERLAY_TEXT, alpha=0.70),
+            font_size=9.5,
+            color=brand.color(TEXT_DIM, alpha=0.78),
         )
         content.addSubview_(self._mode_label)
 
-        # Buttons + label fade in once bloomed past a threshold.
         self._cancel_btn.setAlphaValue_(0.0)
         self._finish_btn.setAlphaValue_(0.0)
         self._mode_label.setAlphaValue_(0.0)
@@ -470,30 +428,55 @@ class DictationOverlay:
                 WAKE_SOUND_PATH, True,
             )
             if sound is not None:
-                sound.setVolume_(0.45)
+                sound.setVolume_(0.4)
                 self._wake_sound = sound
         except Exception:
             _log.debug('Wake sound load failed', exc_info=True)
 
-    def _make_button(self, frame, title: str, action, bg_color) -> NSButton:
+    def _make_button(
+        self,
+        frame,
+        title: str,
+        action,
+        *,
+        fill_rgb,
+        fill_alpha: float,
+        glyph_rgb,
+        rim_alpha: float = 0.0,
+    ) -> NSButton:
         btn = NSButton.alloc().initWithFrame_(frame)
         btn.setTitle_(title)
         btn.setBordered_(False)
         btn.setWantsLayer_(True)
 
+        # Round disc — solid white for finish, translucent ghost for cancel.
         layer = btn.layer()
         if layer:
             layer.setBackgroundColor_(
                 CGColorCreateGenericRGB(
-                    bg_color.redComponent(),
-                    bg_color.greenComponent(),
-                    bg_color.blueComponent(),
-                    bg_color.alphaComponent(),
+                    fill_rgb[0], fill_rgb[1], fill_rgb[2], fill_alpha,
                 )
             )
             layer.setCornerRadius_(frame.size.width / 2.0)
+            if rim_alpha > 0.0:
+                # Hairline rim so the ghost disc reads against the pill.
+                layer.setBorderWidth_(0.75)
+                layer.setBorderColor_(
+                    CGColorCreateGenericRGB(1.0, 1.0, 1.0, rim_alpha)
+                )
 
-        btn.setFont_(NSFont.systemFontOfSize_(14.0))
+        # Glyph via attributed title so we can recolour ✕ / ✓.
+        from AppKit import NSAttributedString, NSForegroundColorAttributeName
+        glyph_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(
+            glyph_rgb[0], glyph_rgb[1], glyph_rgb[2], 1.0,
+        )
+        font = NSFont.systemFontOfSize_(11.0)
+        attrs = {
+            NSForegroundColorAttributeName: glyph_color,
+            'NSFont': font,
+        }
+        attr_title = NSAttributedString.alloc().initWithString_attributes_(title, attrs)
+        btn.setAttributedTitle_(attr_title)
 
         target = self._make_action_target(action)
         if not hasattr(self, '_action_targets'):
@@ -512,7 +495,6 @@ class DictationOverlay:
 
     def _make_label(self, frame, text: str, font_size: float, color) -> NSView:
         from AppKit import NSTextField
-
         label = NSTextField.alloc().initWithFrame_(frame)
         label.setStringValue_(text)
         label.setBezeled_(False)
@@ -521,7 +503,7 @@ class DictationOverlay:
         label.setSelectable_(False)
         label.setFont_(NSFont.systemFontOfSize_(font_size))
         label.setTextColor_(color)
-        label.setAlignment_(1)  # NSCenterTextAlignment
+        label.setAlignment_(1)
         return label
 
     def _cancel_clicked(self, sender=None) -> None:
@@ -535,15 +517,12 @@ class DictationOverlay:
     # ── Public API ──────────────────────────────────────────────
 
     def show_idle_dot(self) -> None:
-        """Sit at bottom-center as a small glowing dot."""
         self._reposition_for_active_screen()
         self._state = OverlayState.DORMANT
-        if self._orb_view:
-            self._orb_view.set_state(OverlayState.DORMANT)
+        if self._wave_view:
+            self._wave_view.set_state(OverlayState.DORMANT)
         self._set_mode_text('')
         self._target_bloom = 0.0
-        # Window stays interactive only when bloomed (so the dot doesn't
-        # eat clicks across a 320px-wide invisible region).
         if self._window is not None:
             self._window.setIgnoresMouseEvents_(True)
             self._window.setHasShadow_(False)
@@ -551,55 +530,44 @@ class DictationOverlay:
         self._start_animation_timer()
 
     def show_recording(self, mode: str = 'ptt') -> None:
-        """Bloom into the full pill and start mic-driven orb rendering."""
         self._reposition_for_active_screen()
         was_dormant = self._state in (OverlayState.DORMANT, OverlayState.HIDDEN)
         self._state = OverlayState.RECORDING
-        if self._orb_view:
-            self._orb_view.set_state(OverlayState.RECORDING)
-
-        mode_text = (
-            '🎙 Hold to talk' if mode == 'ptt'
-            else '🎙 Hands-free — press Fn to finish'
-        )
-        self._set_mode_text(mode_text)
-
+        if self._wave_view:
+            self._wave_view.set_state(OverlayState.RECORDING)
+        self._set_mode_text('')   # the waveform reads as "recording" on its own
         self._target_bloom = 1.0
         if self._window is not None:
             self._window.setIgnoresMouseEvents_(False)
             self._window.setHasShadow_(True)
-
         self._reveal_window()
         self._start_animation_timer()
         if was_dormant:
             self._play_wake_sound()
 
     def show_processing(self) -> None:
-        """Stay bloomed; switch the orb to its idle-pulse animation."""
         self._state = OverlayState.PROCESSING
-        if self._orb_view:
-            self._orb_view.set_state(OverlayState.PROCESSING)
-        self._set_mode_text('⏳ Processing…')
+        if self._wave_view:
+            self._wave_view.set_state(OverlayState.PROCESSING)
+        self._set_mode_text('')
         self._target_bloom = 1.0
         if self._window is not None:
             self._window.setIgnoresMouseEvents_(False)
         self._start_animation_timer()
 
     def hide(self) -> None:
-        """Fully hide the overlay (e.g. screen lock or fatal error)."""
         self._state = OverlayState.HIDDEN
         self._target_bloom = 0.0
         self._stop_animation_timer()
         self._bloom = 0.0
-        if self._orb_view:
-            self._orb_view.set_bloom(0.0)
+        if self._wave_view:
+            self._wave_view.set_bloom(0.0)
         self._apply_bloom(0.0)
         if self._window is not None:
             self._window.setAlphaValue_(0.0)
             self._window.orderOut_(None)
 
     def push_amplitude(self, amplitude: float) -> None:
-        """Push a new amplitude value (called from audio callback thread)."""
         with self._lock:
             self._amplitude_buffer.append(max(0.0, min(1.0, amplitude)))
 
@@ -627,7 +595,6 @@ class DictationOverlay:
         if self._wake_sound is None:
             return
         try:
-            # Stop+play resets so rapid wake events don't queue.
             self._wake_sound.stop()
             self._wake_sound.play()
         except Exception:
@@ -649,70 +616,58 @@ class DictationOverlay:
     def _make_timer_target(self):
         target = _TimerTarget.alloc().init()
         target._overlay = self
-        self._timer_target = target  # Prevent garbage collection
+        self._timer_target = target
         return target
 
     def _step_bloom(self, dt: float) -> None:
-        """Move bloom toward its target with framerate-aware easing."""
         target = self._target_bloom
         delta = target - self._bloom
         if abs(delta) < 0.002:
             self._bloom = target
             return
-        # Choose a duration based on direction so the collapse feels less
-        # snappy than the wake-up.
         duration = TRANSITION_DURATION if delta > 0 else COLLAPSE_DURATION
-        # Exponential approach: per-frame factor that crosses ~95% over
-        # `duration` seconds.
         k = 1.0 - math.exp(-3.0 * dt / duration)
         self._bloom += delta * k
 
     def _apply_bloom(self, bloom: float) -> None:
-        """Push the current bloom value into all view properties."""
-        if self._orb_view is not None:
-            self._orb_view.set_bloom(bloom)
+        if self._wave_view is not None:
+            self._wave_view.set_bloom(bloom)
 
-        # Background pill fades in once we're past 5% to avoid a flash
-        # when we're nearly fully collapsed.
         bg_opacity = max(0.0, (bloom - 0.05) / 0.95)
         if self._bg_view is not None:
             layer = self._bg_view.layer()
             if layer is not None:
                 layer.setOpacity_(float(bg_opacity))
 
-        # Buttons + label come in late so they don't crowd the bloom.
-        btn_alpha = max(0.0, (bloom - 0.45) / 0.55)
+        btn_alpha = max(0.0, (bloom - 0.40) / 0.60)
         if self._cancel_btn is not None:
             self._cancel_btn.setAlphaValue_(float(btn_alpha))
         if self._finish_btn is not None:
             self._finish_btn.setAlphaValue_(float(btn_alpha))
 
-        label_alpha = max(0.0, (bloom - 0.65) / 0.35)
         if self._mode_label is not None:
-            self._mode_label.setAlphaValue_(float(label_alpha))
+            self._mode_label.setAlphaValue_(0.0)
 
     def _tick(self) -> None:
-        """Driven by NSTimer at ANIMATION_FPS — advance bloom + orb."""
-        if self._orb_view is None or self._window is None:
+        if self._wave_view is None or self._window is None:
             return
 
         dt = 1.0 / ANIMATION_FPS
 
-        # Feed mic amplitude into the orb during recording.
         if self._state == OverlayState.RECORDING:
             with self._lock:
                 amplitudes = list(self._amplitude_buffer)
             recent = amplitudes[-6:] if amplitudes else [0.0]
-            self._orb_view.set_amplitude(max(recent))
+            self._wave_view.set_amplitude(max(recent))
+        else:
+            self._wave_view.set_amplitude(0.0)
 
         self._step_bloom(dt)
         self._apply_bloom(self._bloom)
-        self._orb_view.tick(dt)
+        self._wave_view.tick(dt)
 
 
 class _ActionTarget(NSView):
-    """Tiny Objective-C class that bridges NSButton target-action to Python."""
-
     _callback = None
 
     @objc.typedSelector(b'v@:@')
@@ -722,8 +677,6 @@ class _ActionTarget(NSView):
 
 
 class _TimerTarget(NSView):
-    """Bridges NSTimer target-action to the overlay's tick method."""
-
     _overlay = None
 
     @objc.typedSelector(b'v@:@')

@@ -5,6 +5,8 @@ import { api } from '../lib/api';
 const NAV: { to: string; label: string; disabled?: boolean }[] = [
   { to: '/', label: 'Home' },
   { to: '/insights', label: 'Insights' },
+  { to: '/models', label: 'Models' },
+  { to: '/recordings', label: 'Recordings' },
   { to: '#', label: 'Dictionary', disabled: true },
   { to: '#', label: 'Snippets', disabled: true },
   { to: '#', label: 'Style', disabled: true },
@@ -19,28 +21,26 @@ export function Sidebar() {
   });
 
   return (
-    <aside className="w-[240px] shrink-0 h-full flex flex-col px-3 py-4 border-r border-hairline bg-surface/70">
-      <div className="px-3 mb-6 flex items-center gap-2.5">
+    <aside className="w-[244px] shrink-0 h-full flex flex-col px-3 py-5 border-r border-cloud-light bg-paper">
+      <div className="px-3 mb-9 flex items-center gap-3">
         <img
           src="/logo.png"
-          alt="Say"
-          className="w-9 h-9 rounded-[10px] shadow-ring"
+          alt="Oceanus"
+          className="w-9 h-9 rounded-md border border-cloud-light"
           draggable={false}
         />
-        <div className="leading-tight">
-          <div className="font-semibold text-ink text-[15px] tracking-tight">Say</div>
-          <div className="text-[11px] text-ink-mute">Local · on-device</div>
+        <div className="leading-none">
+          <div className="font-serif text-[22px] tracking-tight text-ink">Oceanus</div>
+          <div className="text-[11px] text-cloud-dark mt-1">Local · on-device</div>
         </div>
       </div>
 
-      <nav className="flex flex-col gap-1">
+      <nav className="flex flex-col gap-0.5">
         {NAV.map((item) =>
           item.disabled ? (
             <div key={item.label} className="sidebar-item-disabled">
-              <span className="text-sm">{item.label}</span>
-              <span className="ml-auto text-[10px] uppercase tracking-wide text-ink-soft">
-                soon
-              </span>
+              <span>{item.label}</span>
+              <span className="ml-auto eyebrow text-[9px]">soon</span>
             </div>
           ) : (
             <NavLink
@@ -48,7 +48,9 @@ export function Sidebar() {
               to={item.to}
               end={item.to === '/'}
               className={({ isActive }) =>
-                isActive ? 'sidebar-item-active' : 'sidebar-item'
+                isActive
+                  ? 'sidebar-item-active relative pl-4 before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-full before:bg-crail before:content-[""]'
+                  : 'sidebar-item'
               }
             >
               {item.label}
@@ -57,15 +59,13 @@ export function Sidebar() {
         )}
       </nav>
 
-      <div className="mt-auto px-3 py-4 border-t border-hairline">
-        <div className="text-[11px] uppercase tracking-wide text-ink-soft mb-1">
-          Local-only
-        </div>
-        <div className="text-sm text-ink">
+      <div className="mt-auto px-3 pt-5 border-t border-cloud-light">
+        <div className="eyebrow mb-2">Local-only</div>
+        <div className="text-[14px] text-ink leading-snug">
           {summary?.transcript_count ?? '—'} transcripts on this Mac
         </div>
-        <div className="text-[11px] text-ink-mute mt-1">
-          Audio is never written to disk.
+        <div className="text-[12px] text-cloud-dark mt-1.5 leading-relaxed">
+          Nothing ever leaves this Mac.
         </div>
       </div>
     </aside>

@@ -8,7 +8,7 @@ needs to change when you swap a file. All paths are relative to
 
 | File | Purpose | Recommended size |
 | --- | --- | --- |
-| `logo.png` (or `logo@2x.png`) | Full-color bear-with-microphone logo. Used in the first-run wizard, Settings header, and the About dialog. | 512 × 512 PNG, transparent or sky-blue background |
+| `logo.png` (or `logo@2x.png`) | Full-color app icon — cream tile with the olive quatrefoil mark, rounded corners on transparent. Used in the first-run wizard, Settings header, and the About dialog. | 512 × 512 PNG, transparent corners |
 | `menubar-template.pdf` (or `menubar-template.png`) | Monochrome glyph for the macOS menu bar. The system tints it to match light/dark menu bars. | 18 × 18 PDF, pure black on transparent |
 
 Higher-resolution `@2x` and `@3x` variants are loaded automatically if

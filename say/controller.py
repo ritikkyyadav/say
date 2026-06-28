@@ -189,6 +189,7 @@ class DictationController:
         Args:
             mode: 'ptt' for push-to-talk, 'hands_free' for toggle mode.
         """
+        _log.info('start_recording called (mode=%s, current_state=%s)', mode, self.state)
         error_for_notify: str | None = None
         with self._lock:
             if self._recording or self.state in {
@@ -196,15 +197,18 @@ class DictationController:
                 DictationState.RECORDING,
                 DictationState.PROCESSING,
             }:
+                _log.info('start_recording rejected — already in %s', self.state)
                 return False
             self._recording = True
             self._recording_mode = mode
             try:
                 self.recorder.start()
+                _log.info('AudioRecorder.start() returned — mic stream open')
             except Exception as exc:
                 self._recording = False
                 self._recording_mode = None
                 error_for_notify = f'Microphone start failed: {exc}'
+                _log.exception('AudioRecorder.start() raised')
                 self._emit(DictationState.ERROR, error_for_notify, error=str(exc))
 
         if error_for_notify is not None:
@@ -289,7 +293,8 @@ class DictationController:
                 success=True,
             )
             try:
-                get_store().insert(
+                store = get_store()
+                transcript_id = store.insert(
                     text=text,
                     audio_seconds=duration,
                     inference_seconds=inference_seconds,
@@ -298,6 +303,7 @@ class DictationController:
                     target_app=target_app,
                     success=True,
                 )
+                self._save_recording(store, transcript_id, audio)
             except Exception:
                 _log.exception('Failed to persist transcript to store')
             return True
@@ -343,6 +349,22 @@ class DictationController:
 
         self._emit(DictationState.READY, 'Ready — recording cancelled')
         return True
+
+    def _save_recording(self, store: Any, transcript_id: int, audio: Any) -> None:
+        """Persist the clip's audio when the user has opted into recordings.
+
+        Best-effort and fully self-contained: a failure here must never
+        affect a dictation that has already been transcribed and injected.
+        """
+        if not getattr(config, 'SAVE_RECORDINGS', False):
+            return
+        try:
+            import recordings
+
+            if recordings.save_for_transcript(store, transcript_id, audio):
+                recordings.enforce_retention(store)
+        except Exception:
+            _log.exception('Recording save failed (non-fatal)')
 
     def _duration(self, audio) -> float:
         duration = getattr(self.recorder, 'duration', None)

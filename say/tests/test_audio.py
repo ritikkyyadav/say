@@ -53,17 +53,24 @@ class AudioRecorderTests(unittest.TestCase):
             events.append((name, msg))
 
         rec.set_event_callback(event_cb)
-        rec.start()
+        # Pin a short cap so the test allocates a tiny buffer regardless of the
+        # (generous) shipped default.
+        original_cap = config.MAX_RECORDING_SECONDS
+        config.MAX_RECORDING_SECONDS = 2
+        try:
+            rec.start()
 
-        # Prepare a buffer that will exceed MAX_RECORDING_SECONDS in one shot.
-        big_samples = config.SAMPLE_RATE * config.MAX_RECORDING_SECONDS + 100
-        big_block = np.zeros((big_samples, 1), dtype='float32')
-        rec._callback(big_block, big_samples, None, None)
+            # Prepare a buffer that will exceed MAX_RECORDING_SECONDS in one shot.
+            big_samples = config.SAMPLE_RATE * config.MAX_RECORDING_SECONDS + 100
+            big_block = np.zeros((big_samples, 1), dtype='float32')
+            rec._callback(big_block, big_samples, None, None)
 
-        # Fire a second callback to confirm max_duration is *not* dispatched twice.
-        rec._callback(
-            np.zeros((1024, 1), dtype='float32'), 1024, None, None
-        )
+            # Fire a second callback to confirm max_duration is *not* dispatched twice.
+            rec._callback(
+                np.zeros((1024, 1), dtype='float32'), 1024, None, None
+            )
+        finally:
+            config.MAX_RECORDING_SECONDS = original_cap
 
         deadline = time.time() + 1.0
         while time.time() < deadline and not any(

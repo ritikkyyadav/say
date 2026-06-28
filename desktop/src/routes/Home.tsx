@@ -1,18 +1,44 @@
-import { useQuery } from '@tanstack/react-query';
-import { api } from '../lib/api';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { api, invalidateEngineEndpoint } from '../lib/api';
 import { groupByDay } from '../lib/grouping';
 import { TranscriptCard } from '../components/TranscriptCard';
+import { PermissionsBanner } from '../components/PermissionsBanner';
 
 function StatTile({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="card p-4">
-      <div className="text-[11px] uppercase tracking-wide text-ink-mute">{label}</div>
-      <div className="text-2xl font-semibold tabular-nums mt-1">{value}</div>
+    <div className="card p-5">
+      <div className="eyebrow">{label}</div>
+      <div className="stat-number text-[2.25rem] mt-3">{value}</div>
+    </div>
+  );
+}
+
+function EngineDisconnected({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  const msg = error instanceof Error ? error.message : String(error ?? 'Unknown error');
+  return (
+    <div className="card p-6">
+      <h3 className="font-serif text-h3 font-normal text-ink mb-2">
+        Can't reach the dictation engine
+      </h3>
+      <p className="text-cloud-dark text-[14px] leading-relaxed mb-4 max-w-prose">
+        The desktop window talks to the engine over a local HTTP socket. Make sure the
+        engine is running, then retry.
+      </p>
+      <div className="text-[13px] font-mono text-ink bg-book-cloth border border-cloud-light rounded-md px-3 py-2 mb-4 overflow-x-auto">
+        ~/.venvs/say/bin/python say/app.py --server
+      </div>
+      <div className="text-[12px] text-cloud-dark mb-4">
+        Last error: <span className="font-mono">{msg}</span>
+      </div>
+      <button onClick={onRetry} className="btn-primary">
+        Retry
+      </button>
     </div>
   );
 }
 
 export function Home() {
+  const queryClient = useQueryClient();
   const profile = useQuery({ queryKey: ['profile'], queryFn: api.profile });
   const summary = useQuery({ queryKey: ['summary'], queryFn: api.summary });
   const transcripts = useQuery({
@@ -23,33 +49,38 @@ export function Home() {
   const groups = transcripts.data ? groupByDay(transcripts.data) : [];
   const firstName = profile.data?.first_name ?? 'there';
 
+  const retry = () => {
+    invalidateEngineEndpoint();
+    queryClient.invalidateQueries();
+  };
+
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6">
+    <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-12">
       <div className="min-w-0">
-        <h1 className="text-2xl font-semibold mb-6">
-          Welcome back, {firstName}
-        </h1>
+        <header className="mb-10">
+          <p className="eyebrow mb-3">Your dictation</p>
+          <h1 className="display text-[2.75rem]">Welcome back, {firstName}</h1>
+        </header>
+
+        <PermissionsBanner />
 
         {transcripts.isLoading ? (
-          <div className="text-ink-mute text-sm">Loading transcripts…</div>
+          <div className="text-cloud-dark text-[14px]">Loading transcripts…</div>
         ) : transcripts.isError ? (
-          <div className="card p-4 text-rose-700 text-sm">
-            Couldn't reach the dictation engine.
-          </div>
+          <EngineDisconnected error={transcripts.error} onRetry={retry} />
         ) : groups.length === 0 ? (
-          <div className="card p-8 text-center text-ink-mute">
-            <div className="text-base text-ink mb-2">No dictations yet.</div>
-            <div className="text-sm">
-              Press Fn (or your fallback hotkey) to start.
-            </div>
+          <div className="card p-10 max-w-prose">
+            <h3 className="font-serif text-h3 font-normal text-ink mb-2">No dictations yet</h3>
+            <p className="text-cloud-dark text-[14px] leading-relaxed">
+              Hold <span className="kbd">Fn</span> and speak. Release, and the text appears in
+              whatever app you're working in. Everything you say stays on this Mac.
+            </p>
           </div>
         ) : (
-          <div className="flex flex-col gap-8">
+          <div className="flex flex-col gap-10">
             {groups.map((g) => (
               <section key={g.isoDate}>
-                <h2 className="text-[11px] tracking-widest uppercase text-ink-soft mb-3">
-                  {g.label}
-                </h2>
+                <h2 className="eyebrow mb-4">{g.label}</h2>
                 <div className="flex flex-col gap-3">
                   {g.rows.map((row) => (
                     <TranscriptCard key={row.id} row={row} />
@@ -61,7 +92,7 @@ export function Home() {
         )}
       </div>
 
-      <aside className="flex flex-col gap-3">
+      <aside className="flex flex-col gap-4">
         <StatTile
           label="Total words"
           value={summary.data ? summary.data.total_words.toLocaleString() : '—'}
@@ -71,7 +102,7 @@ export function Home() {
           value={summary.data ? summary.data.wpm_30d.toFixed(0) : '—'}
         />
         <StatTile
-          label="Streak (days)"
+          label="Streak · days"
           value={summary.data ? summary.data.streak_days : '—'}
         />
       </aside>

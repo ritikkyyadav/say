@@ -44,6 +44,8 @@ from Quartz import CGColorCreateGenericRGB
 
 import brand
 import config
+import model_catalog
+import model_manager
 import settings as settings_mod
 
 _log = get_logger('settings_window')
@@ -54,14 +56,16 @@ HERO_H = 110
 PADDING = 28
 
 
-_MODEL_OPTIONS = [
-    ('mlx-community/whisper-large-v3-turbo', 'Large v3 Turbo (fast, default)'),
-    ('mlx-community/whisper-large-v3-mlx', 'Large v3 (most accurate)'),
-    ('mlx-community/whisper-medium-mlx', 'Medium (balanced)'),
-    ('mlx-community/whisper-small-mlx', 'Small (low storage)'),
-    ('mlx-community/whisper-base-mlx', 'Base'),
-    ('mlx-community/whisper-tiny-mlx', 'Tiny'),
-]
+def _model_options() -> list[tuple[str, str]]:
+    """(repo_id, label) pairs for the Model popup, sourced from the catalog."""
+    opts: list[tuple[str, str]] = []
+    for info in model_catalog.catalog():
+        suffix = ' (recommended)' if info.recommended else ''
+        opts.append((info.id, f'{info.name}{suffix}'))
+    return opts
+
+
+_MODEL_OPTIONS = _model_options()
 
 _INJECT_LABELS = ['Auto', 'Accessibility', 'Clipboard']
 _INJECT_VALUES = ['auto', 'accessibility', 'clipboard']
@@ -161,7 +165,7 @@ class _SettingsController(NSView):
 
         sub = _label(
             NSMakeRect(PADDING + 80, HERO_H / 2 - 22, WIN_W - PADDING - 100, 18),
-            'Saved automatically. Model changes apply on next launch.',
+            'Saved automatically. Model changes apply right away.',
             brand.font(12), brand.color(brand.SLATE),
         )
         hero.addSubview_(sub)
@@ -421,7 +425,13 @@ class _SettingsController(NSView):
             return
         value = item.representedObject()
         if value:
-            settings_mod.set_value('MODEL', str(value))
+            # Route through the manager so the running engine swaps to the new
+            # model immediately (and the choice is persisted) — no relaunch.
+            try:
+                model_manager.get_manager().set_active(str(value))
+            except Exception:
+                _log.exception('Live model switch failed; persisting only')
+                settings_mod.set_value('MODEL', str(value))
 
     def _on_language(self, sender) -> None:
         text = (sender.stringValue() or '').strip()

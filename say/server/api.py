@@ -2,12 +2,20 @@
 
 Endpoints:
   GET  /health                       — liveness + current engine state
+  GET  /listener                     — hotkey listener status (kind, label, fell_back, perms)
   GET  /user/profile                 — first-name for the home greeting
   GET  /transcripts                  — reverse-chronological list, paginated
   GET  /stats/summary                — totals, WPM, streak, monthly delta
   GET  /stats/desktop_usage          — per-app usage rollup
   GET  /stats/heatmap                — per-day count grid
   POST /transcripts/{id}/copy        — telemetry stub (no-op)
+  GET  /recordings                   — saved audio receipts (newest first)
+  GET  /recordings/config            — save toggle + retention policy + totals
+  POST /recordings/config            — update save toggle / retention (prunes)
+  POST /recordings/export            — bundle all clips + manifest into a local ZIP
+  GET  /recordings/{id}/audio        — WAV bytes for one clip
+  DELETE /recordings/{id}            — delete one clip
+  DELETE /recordings                 — delete all clips
   GET  /events                       — SSE stream of DictationEvent state
 
 Security model: bind to 127.0.0.1 only, optional bearer token in header
@@ -21,17 +29,34 @@ import logging
 import os
 import socket
 import sys
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from .events import get_bus
 from .runtime import clear_runtime, write_runtime
 from .store import TranscriptStore, get_store
+
+
+class ActiveModelRequest(BaseModel):
+    """Body for POST /models/active."""
+
+    id: str
+
+
+class RecordingsConfigRequest(BaseModel):
+    """Body for POST /recordings/config — all fields optional (partial update)."""
+
+    save_recordings: bool | None = None
+    retention_mode: str | None = None
+    retention_days: int | None = None
+    max_bytes: int | None = None
 
 _log = logging.getLogger('say.server.api')
 
@@ -83,6 +108,39 @@ def _check_auth(app: FastAPI, request: Request) -> None:
         raise HTTPException(status_code=401, detail='Bad or missing token')
 
 
+# ── Listener status (set from app.py once make_listener has run) ─────────
+_LISTENER_STATE: dict[str, Any] = {
+    'kind': None,           # 'fn' | 'legacy' | None
+    'label': None,
+    'fell_back': False,
+    'fn_error': None,       # CGEventTap creation error, if any
+    'started': False,
+}
+
+
+def set_listener_state(**kwargs: Any) -> None:
+    """Engine calls this once make_listener returns so /listener can
+    expose the active mode + any permission-related error to the UI."""
+    _LISTENER_STATE.update(kwargs)
+
+
+def _accessibility_trusted() -> bool:
+    """Whether AXIsProcessTrusted reports True for the current process.
+
+    Returns False on import failure so the UI errs on the side of
+    showing the permissions banner.
+    """
+    try:
+        import HIServices  # type: ignore[import-not-found]
+        return bool(HIServices.AXIsProcessTrusted())
+    except Exception:
+        try:
+            from ApplicationServices import AXIsProcessTrusted  # type: ignore[import-not-found]
+            return bool(AXIsProcessTrusted())
+        except Exception:
+            return False
+
+
 def create_app(*, store: TranscriptStore | None = None, auth_token: str | None = None) -> FastAPI:
     """Build the FastAPI app. Useful in tests with an injected store."""
 
@@ -99,7 +157,7 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
         CORSMiddleware,
         allow_origins=_ALLOWED_ORIGINS,
         allow_credentials=False,
-        allow_methods=['GET', 'POST'],
+        allow_methods=['GET', 'POST', 'DELETE'],
         allow_headers=['Authorization', 'Content-Type'],
     )
 
@@ -115,6 +173,15 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
         # other request.
         snapshot = get_bus().snapshot()
         return {'ok': True, 'state': snapshot.get('state', 'idle')}
+
+    @app.get('/listener')
+    async def listener_state(request: Request) -> dict[str, Any]:
+        # Same auth-free policy as /health — the UI polls this on every
+        # window focus to decide whether to show the permissions banner.
+        return {
+            **_LISTENER_STATE,
+            'accessibility_trusted': _accessibility_trusted(),
+        }
 
     @app.get('/user/profile')
     async def user_profile(request: Request) -> dict[str, Any]:
@@ -157,6 +224,135 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
         _check_auth(app, request)
         return Response(status_code=204)
 
+    # ── Model management ─────────────────────────────────────────────────
+
+    @app.get('/models')
+    async def list_models(request: Request) -> dict[str, Any]:
+        _check_auth(app, request)
+        import model_manager
+
+        mgr = model_manager.get_manager()
+        return {
+            'active': mgr.active_model(),
+            'cache_bytes': mgr.total_disk_bytes(),
+            'models': mgr.list_models(),
+        }
+
+    @app.post('/models/active')
+    async def set_active_model(request: Request, body: ActiveModelRequest) -> dict[str, Any]:
+        _check_auth(app, request)
+        import model_manager
+
+        try:
+            active = model_manager.get_manager().set_active(body.id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {'active': active}
+
+    @app.post('/models/{model_id:path}/download')
+    async def download_model(model_id: str, request: Request) -> dict[str, Any]:
+        _check_auth(app, request)
+        import model_manager
+
+        try:
+            return model_manager.get_manager().start_download(model_id)
+        except model_manager.InsufficientStorage as exc:
+            raise HTTPException(status_code=507, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.post('/models/{model_id:path}/cancel')
+    async def cancel_download(model_id: str, request: Request) -> dict[str, Any]:
+        _check_auth(app, request)
+        import model_manager
+
+        cancelled = model_manager.get_manager().cancel_download(model_id)
+        return {'cancelled': cancelled}
+
+    @app.delete('/models/{model_id:path}')
+    async def delete_model(model_id: str, request: Request) -> dict[str, Any]:
+        _check_auth(app, request)
+        import model_manager
+
+        try:
+            model_manager.get_manager().delete(model_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {}
+
+    # ── Recordings (audio receipts) ──────────────────────────────────────
+
+    @app.get('/recordings')
+    async def list_recordings(
+        request: Request,
+        limit: int = Query(500, ge=1, le=5000),
+    ) -> list[dict[str, Any]]:
+        _check_auth(app, request)
+        import recordings
+
+        return recordings.list_recordings(app.state.store, limit=limit)
+
+    @app.get('/recordings/config')
+    async def get_recordings_config(request: Request) -> dict[str, Any]:
+        _check_auth(app, request)
+        import recordings
+
+        return recordings.recordings_config(app.state.store)
+
+    @app.post('/recordings/config')
+    async def set_recordings_config(
+        request: Request, body: RecordingsConfigRequest
+    ) -> dict[str, Any]:
+        _check_auth(app, request)
+        import recordings
+
+        try:
+            return recordings.apply_recordings_config(
+                app.state.store,
+                save_recordings=body.save_recordings,
+                retention_mode=body.retention_mode,
+                retention_days=body.retention_days,
+                max_bytes=body.max_bytes,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post('/recordings/export')
+    async def export_recordings(request: Request) -> dict[str, Any]:
+        _check_auth(app, request)
+        import recordings
+
+        return recordings.export_zip(app.state.store)
+
+    @app.get('/recordings/{recording_id}/audio')
+    async def recording_audio(recording_id: int, request: Request) -> Response:
+        _check_auth(app, request)
+        import recordings
+
+        data = recordings.read_bytes(app.state.store, recording_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail='No recording for that id')
+        return Response(
+            content=data,
+            media_type='audio/wav',
+            headers={'Cache-Control': 'no-store'},
+        )
+
+    @app.delete('/recordings/{recording_id}')
+    async def delete_recording(recording_id: int, request: Request) -> dict[str, Any]:
+        _check_auth(app, request)
+        import recordings
+
+        deleted = recordings.delete_recording(app.state.store, recording_id)
+        return {'deleted': deleted}
+
+    @app.delete('/recordings')
+    async def clear_recordings(request: Request) -> dict[str, Any]:
+        _check_auth(app, request)
+        import recordings
+
+        return {'deleted': recordings.delete_all(app.state.store)}
+
     @app.get('/events')
     async def events_stream(request: Request):
         _check_auth(app, request)
@@ -171,7 +367,7 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
                     try:
                         payload = await asyncio.wait_for(sub.__anext__(), timeout=15.0)
                         yield {'event': 'state', 'data': _json(payload)}
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         # Heartbeat keeps proxies / fetch readers alive.
                         yield {'event': 'ping', 'data': '{}'}
 
@@ -222,10 +418,8 @@ def serve_blocking(*, host: str = '127.0.0.1', port: int | None = None, log_leve
         clear_runtime()
 
 
-def serve_in_thread(**kwargs) -> 'threading.Thread':
+def serve_in_thread(**kwargs) -> threading.Thread:
     """Run the server on a background thread. Returns the thread."""
-    import threading
-
     t = threading.Thread(target=serve_blocking, kwargs=kwargs, name='say-api', daemon=True)
     t.start()
     return t

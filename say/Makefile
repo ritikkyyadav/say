@@ -13,7 +13,7 @@
 # but users must right-click → Open the first time to bypass Gatekeeper.
 
 VERSION       := 0.1.0
-APP_NAME      := Say
+APP_NAME      := Oceanus
 PYTHON        := $(if $(SAY_PYTHON),$(SAY_PYTHON),$(HOME)/.venvs/say/bin/python)
 PIP           := $(PYTHON) -m pip
 PYINSTALLER   := $(PYTHON) -m PyInstaller
@@ -21,9 +21,12 @@ DIST          := dist
 APP_BUNDLE    := $(DIST)/$(APP_NAME).app
 DMG_NAME      := $(APP_NAME)-v$(VERSION)-unsigned.dmg
 DMG_PATH      := $(DIST)/$(DMG_NAME)
-MODEL_NAME    := $(if $(SAY_MODEL),$(SAY_MODEL),mlx-community/whisper-large-v3-turbo)
+# The bundled default is the small Moonshine ONNX model (English). The big
+# multilingual Whisper models are optional downloads from the Models tab, so
+# only Moonshine ships inside the app.
+MODEL_NAME    := $(if $(SAY_MODEL),$(SAY_MODEL),moonshine/medium-streaming-en)
 MODEL_LEAF    := $(notdir $(MODEL_NAME))
-HF_CACHE      := $(HOME)/.cache/huggingface/hub/models--$(subst /,--,$(MODEL_NAME))
+MOON_CACHE    := $(HOME)/.cache/moonshine/download.moonshine.ai/model/$(MODEL_LEAF)/quantized
 
 .PHONY: all build dmg sign notarize clean install predownload bundle-model
 
@@ -35,24 +38,43 @@ install:
 	$(PIP) install pyinstaller create-dmg-cli || true
 
 predownload:
-	$(PYTHON) -c "from transcriber import Transcriber; Transcriber().predownload()"
+	$(PYTHON) -c "from transcriber import Transcriber; Transcriber().predownload(print)"
 
 build:
-	$(PYINSTALLER) --noconfirm --clean Say.spec
-	@# Patch Info.plist with our authoritative copy (overrides what BUNDLE() set)
-	cp Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
-	@echo "[OK] Built unsigned $(APP_BUNDLE)"
+	@# moonshine_voice ships a Linux libmoonshine.so beside the macOS .dylib.
+	@# PyInstaller's ctypes scan finds the "libmoonshine.so" CDLL literal and
+	@# tries to Mach-O-parse the ELF (build crash). Hide it for the macOS build,
+	@# then restore it (failure-safe) so only the .dylib is collected.
+	@# NOTE: do NOT cp a different Info.plist over the bundle here — PyInstaller
+	@# ad-hoc signs the bundle (codesign_identity='-' in Say.spec) and any
+	@# post-sign edit to Contents/Info.plist breaks the code-signature seal,
+	@# which makes macOS refuse all TCC (Accessibility/Input-Monitoring) grants.
+	@MV_SO=$$($(PYTHON) -c "import moonshine_voice,os;print(os.path.join(os.path.dirname(moonshine_voice.__file__),'libmoonshine.so'))"); \
+		[ -f "$$MV_SO" ] && mv "$$MV_SO" "$$MV_SO.bak" || true; \
+		$(PYINSTALLER) --noconfirm --clean Say.spec; RC=$$?; \
+		[ -f "$$MV_SO.bak" ] && mv "$$MV_SO.bak" "$$MV_SO" || true; \
+		[ $$RC -eq 0 ] || { echo "[!] PyInstaller failed (rc=$$RC)"; exit $$RC; }
+	@codesign --verify --strict "$(APP_BUNDLE)" \
+		&& echo "[OK] Built + validly ad-hoc-signed $(APP_BUNDLE)" \
+		|| { echo "[!] PyInstaller seal invalid — aborting"; exit 1; }
 
 bundle-model:
-	@if [ ! -d "$(HF_CACHE)" ]; then \
-		echo "[!] HF cache not found at $(HF_CACHE) — run 'make predownload' first"; \
+	@if [ ! -d "$(MOON_CACHE)" ]; then \
+		echo "[!] Moonshine model not found at $(MOON_CACHE) — run 'make predownload' first"; \
 		exit 1; \
 	fi
-	@SNAP=$$(ls -1 "$(HF_CACHE)/snapshots" | head -n1); \
-		if [ -z "$$SNAP" ]; then echo "[!] No snapshot in $(HF_CACHE)"; exit 1; fi; \
-		mkdir -p "$(APP_BUNDLE)/Contents/Resources/models/$(MODEL_LEAF)"; \
-		echo "[+] Copying $(HF_CACHE)/snapshots/$$SNAP -> bundle"; \
-		rsync -aL "$(HF_CACHE)/snapshots/$$SNAP/" "$(APP_BUNDLE)/Contents/Resources/models/$(MODEL_LEAF)/"
+	mkdir -p "$(APP_BUNDLE)/Contents/Resources/models/$(MODEL_LEAF)"
+	@echo "[+] Copying Moonshine model ($(MODEL_LEAF)) -> bundle"
+	rsync -aL "$(MOON_CACHE)/" "$(APP_BUNDLE)/Contents/Resources/models/$(MODEL_LEAF)/"
+	@# Bundling the model into Contents/Resources/ invalidates the PyInstaller
+	@# seal, so re-seal. A plain (non-deep) re-sign works: the nested Mach-O is
+	@# already validly signed by PyInstaller and the model is plain .ort data
+	@# (not Mach-O) under Resources/.
+	@xattr -cr "$(APP_BUNDLE)" 2>/dev/null || true
+	@codesign --force --sign - --identifier com.oceanus.dictation "$(APP_BUNDLE)"
+	@codesign --verify --strict "$(APP_BUNDLE)" \
+		&& echo "[OK] Re-sealed engine bundle with Moonshine model ($(APP_BUNDLE))" \
+		|| { echo "[!] Engine re-seal invalid after bundle-model — aborting"; exit 1; }
 
 dmg:
 	@if ! command -v create-dmg >/dev/null 2>&1; then \

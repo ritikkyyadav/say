@@ -3,52 +3,121 @@
 @tailwind utilities;
 
 @layer base {
-  html, body, #root {
+  html,
+  body,
+  #root {
     height: 100%;
   }
   body {
-    @apply bg-canvas text-ink antialiased;
-    font-family: 'Inter', 'SF Pro Text', system-ui, sans-serif;
-    font-size: 14px;
+    @apply bg-book-cloth text-ink antialiased;
+    font-family: 'Geist', 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 15px;
+    font-feature-settings: 'kern', 'liga', 'calt';
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
   }
-  h1, h2, h3 {
-    letter-spacing: -0.01em;
+
+  /* Serif headlines, regular weight — hierarchy carried by size, not weight. */
+  h1,
+  h2,
+  .display {
+    font-family: 'Fraunces', 'Tiempos Text', Georgia, serif;
+    font-weight: 400;
+    font-variation-settings: 'opsz' 144, 'SOFT' 50, 'WONK' 0;
+    letter-spacing: -0.015em;
+    line-height: 1.1;
+  }
+  h3,
+  h4 {
+    font-weight: 500;
+    letter-spacing: -0.005em;
+  }
+
+  /* Serif used at reading size wants the text optical cut, not the display one. */
+  p.font-serif {
+    font-variation-settings: 'opsz' 14, 'SOFT' 50, 'WONK' 0;
+  }
+
+  /* Aligned numerals for all the metrics this app is built around. */
+  .tnum {
+    font-feature-settings: 'tnum' 1, 'kern' 1;
+  }
+
+  ::selection {
+    background: theme('colors.crail.DEFAULT');
+    color: theme('colors.book-cloth');
   }
 }
 
 @layer components {
+  /* Flat surface with a hairline border — never a drop shadow. */
   .card {
-    @apply bg-surface border border-hairline rounded-card shadow-card;
+    @apply bg-paper border border-cloud-light rounded-card;
   }
+
+  /* Small uppercase label that sits above headings (editorial eyebrow). */
+  .eyebrow {
+    @apply text-[11px] font-medium uppercase tracking-caps text-cloud-dark;
+  }
+
+  /* Large serif metric value — the editorial way to present a number. */
+  .stat-number {
+    @apply font-serif font-normal tnum leading-none;
+  }
+
   .pill {
-    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[12px] font-medium;
   }
   .pill-mute {
-    @apply pill bg-canvas text-ink-mute border border-hairline;
+    @apply pill bg-book-cloth text-cloud-dark border border-cloud-light;
   }
   .pill-accent {
-    @apply pill bg-accent/10 text-accent-700;
+    @apply pill bg-crail/10 text-crail-deep border border-crail/20;
   }
+
+  /* Buttons: 8px radius, never high-saturation pills. */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-4 py-2
+           text-[13px] font-medium transition-colors;
+  }
+  .btn-primary {
+    @apply btn bg-ink text-book-cloth hover:bg-[#2a2a28];
+  }
+  .btn-accent {
+    @apply btn bg-crail text-book-cloth hover:bg-crail-deep;
+  }
+  .btn-secondary {
+    @apply btn border border-ink text-ink hover:bg-ink hover:text-book-cloth;
+  }
+
   .sidebar-item {
-    @apply flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-ink-mute hover:bg-canvas/80 hover:text-ink transition-colors;
+    @apply flex items-center px-3 py-2 rounded-md text-[14px] text-cloud-dark
+           hover:bg-book-cloth hover:text-ink transition-colors;
   }
   .sidebar-item-active {
-    @apply sidebar-item bg-canvas text-ink font-medium;
+    @apply sidebar-item bg-book-cloth text-ink font-medium;
   }
   .sidebar-item-disabled {
-    @apply sidebar-item opacity-45 pointer-events-none;
+    @apply sidebar-item opacity-40 pointer-events-none;
   }
+
   .kbd {
-    @apply inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded
-           bg-canvas border border-hairline text-[11px] text-ink-mute font-medium;
+    @apply inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-sm
+           bg-book-cloth border border-cloud-light text-[11px] text-cloud-dark font-medium;
   }
 }
 
 @keyframes recording-pulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.15); opacity: 0.7; }
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.65;
+  }
 }
 
 .recording-dot {

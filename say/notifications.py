@@ -40,14 +40,14 @@ def notify(title: str, text: str):
 
 def notify_recording_start():
     """Notify that recording has started."""
-    notify('Say', '🎙 Recording…')
+    notify('Oceanus', '🎙 Recording…')
 
 
 def notify_transcription_complete(text: str):
     """Notify that transcription is complete with the result."""
-    notify('Say', f'✓ {text}')
+    notify('Oceanus', f'✓ {text}')
 
 
 def notify_error(message: str):
     """Notify about an error."""
-    notify('Say', f'⚠ {message}')
+    notify('Oceanus', f'⚠ {message}')

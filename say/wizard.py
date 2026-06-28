@@ -54,7 +54,7 @@ _PERMISSIONS = [
     (
         'Microphone',
         'microphone',
-        'Record your voice. Audio is never written to disk.',
+        'Record your voice. Audio stays on this Mac and is never uploaded.',
     ),
     (
         'Accessibility',
@@ -132,7 +132,7 @@ class _WizardController(NSView):
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, WIN_W, WIN_H), style, NSBackingStoreBuffered, False,
         )
-        win.setTitle_('Welcome to Say')
+        win.setTitle_('Welcome to Oceanus')
         win.setTitlebarAppearsTransparent_(True)
         win.setMovableByWindowBackground_(True)
         win.setBackgroundColor_(brand.color(brand.MIST))
@@ -173,7 +173,7 @@ class _WizardController(NSView):
 
         title = _label(
             NSMakeRect(PADDING, 50, WIN_W - 2 * PADDING, 36),
-            'Welcome to Say', brand.font(26, 'semibold'), brand.color(brand.INK),
+            'Welcome to Oceanus', brand.font(26, 'semibold'), brand.color(brand.INK),
             align='center',
         )
         hero.addSubview_(title)

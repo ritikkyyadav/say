@@ -104,6 +104,7 @@ class FnHotkeyListener:
 
     def _handle_fn_down(self) -> None:
         """Fn key pressed."""
+        _log.info('Fn down')
         with self._lock:
             self._fn_down = True
             self._fn_press_time = time.time()
