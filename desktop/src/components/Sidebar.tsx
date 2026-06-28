@@ -6,6 +6,7 @@ const NAV: { to: string; label: string; disabled?: boolean }[] = [
   { to: '/', label: 'Home' },
   { to: '/insights', label: 'Insights' },
   { to: '/models', label: 'Models' },
+  { to: '/recordings', label: 'Recordings' },
   { to: '#', label: 'Dictionary', disabled: true },
   { to: '#', label: 'Snippets', disabled: true },
   { to: '#', label: 'Style', disabled: true },
@@ -64,7 +65,7 @@ export function Sidebar() {
           {summary?.transcript_count ?? '—'} transcripts on this Mac
         </div>
         <div className="text-[12px] text-cloud-dark mt-1.5 leading-relaxed">
-          Audio is never written to disk.
+          Nothing ever leaves this Mac.
         </div>
       </div>
     </aside>

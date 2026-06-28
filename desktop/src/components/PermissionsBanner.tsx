@@ -5,7 +5,7 @@ const PANES: { pane: PrivacyPane; label: string; why: string }[] = [
   {
     pane: 'microphone',
     label: 'Microphone',
-    why: 'so Say can hear you while you dictate',
+    why: 'so Oceanus can hear you while you dictate',
   },
   {
     pane: 'accessibility',
@@ -75,10 +75,14 @@ export function PermissionsBanner() {
           </div>
 
           <p className="mt-5 text-[12px] text-cloud-dark leading-relaxed max-w-prose">
-            If <span className="font-medium text-ink">Say</span> isn't in the list yet, click{' '}
-            <span className="font-mono">+</span> at the bottom of the pane and add{' '}
-            <span className="font-mono">/Applications/Say.app</span>. Quit and reopen Say once all
-            three are on — this banner hides itself when Fn becomes active.
+            Grant these to <span className="font-medium text-ink">Oceanus</span> (the engine). If it
+            isn't in the list yet, click <span className="font-mono">+</span>, press{' '}
+            <span className="font-mono">⌘⇧G</span>, and add{' '}
+            <span className="font-mono">
+              /Applications/Oceanus.app/Contents/Resources/OceanusEngine.app
+            </span>
+            . Quit and reopen Oceanus once all three are on — this banner hides itself when Fn
+            becomes active.
           </p>
         </div>
       </div>
@@ -99,7 +103,7 @@ function describe(listener: {
     return {
       title: 'Hotkey listener could not start',
       body:
-        'Neither the Fn key nor the Ctrl+Space fallback registered. Grant the three permissions below and relaunch Say.',
+        'Neither the Fn key nor the Ctrl+Space fallback registered. Grant the three permissions below and relaunch Oceanus.',
       severity: 'error',
     };
   }
@@ -107,13 +111,13 @@ function describe(listener: {
     return {
       title: 'Dictation works, but Fn key is disabled',
       body:
-        'Say is currently listening on Ctrl+Space because Accessibility for Say.app isn\'t granted. Grant Accessibility AND Input Monitoring below to switch to Fn — and to make Ctrl+Space actually receive events (pynput needs Input Monitoring too).',
+        'Oceanus is currently listening on Ctrl+Space because Accessibility isn\'t granted to the engine. Grant Accessibility AND Input Monitoring below to switch to Fn — and to make Ctrl+Space actually receive events (pynput needs Input Monitoring too).',
       severity: 'warn',
     };
   }
   return {
     title: 'Permissions check',
-    body: 'Make sure all three permissions are granted to Say.app.',
+    body: 'Make sure all three permissions are granted to Oceanus.',
     severity: 'warn',
   };
 }

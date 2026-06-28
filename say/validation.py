@@ -61,6 +61,25 @@ def validate_config(cfg: ModuleType = config) -> list[str]:
     if not isinstance(notifications, bool):
         errors.append('SHOW_NOTIFICATIONS must be True or False.')
 
+    save_recordings = getattr(cfg, 'SAVE_RECORDINGS', None)
+    if not isinstance(save_recordings, bool):
+        errors.append('SAVE_RECORDINGS must be True or False.')
+
+    retention_mode = getattr(cfg, 'RECORDINGS_RETENTION_MODE', None)
+    valid_modes = getattr(cfg, 'VALID_RETENTION_MODES', set())
+    if retention_mode not in valid_modes:
+        errors.append(
+            f'RECORDINGS_RETENTION_MODE must be one of: {", ".join(sorted(valid_modes))}.'
+        )
+
+    retention_days = getattr(cfg, 'RECORDINGS_RETENTION_DAYS', None)
+    if not isinstance(retention_days, int) or retention_days <= 0:
+        errors.append('RECORDINGS_RETENTION_DAYS must be a positive integer.')
+
+    max_bytes = getattr(cfg, 'RECORDINGS_MAX_BYTES', None)
+    if not isinstance(max_bytes, int) or max_bytes <= 0:
+        errors.append('RECORDINGS_MAX_BYTES must be a positive integer.')
+
     return errors
 
 

@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from tempfile import TemporaryDirectory
 
 from fastapi.testclient import TestClient
-
 from server.api import create_app
 from server.store import TranscriptStore
 
@@ -18,6 +17,9 @@ def _now() -> str:
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
+        import config
+        import settings
+
         self._tmp = TemporaryDirectory()
         self.store = TranscriptStore(os.path.join(self._tmp.name, 't.db'))
         self.store.insert(
@@ -29,10 +31,37 @@ class ApiTests(unittest.TestCase):
             target_app='com.apple.TextEdit',
             ts_utc=_now(),
         )
+        # Isolate settings + config knobs so recording-config tests never
+        # touch the user's real ~/Library settings.json.
+        self._settings_file = settings.SETTINGS_FILE
+        self._settings_dir = settings.SETTINGS_DIR
+        settings.SETTINGS_DIR = self._tmp.name
+        settings.SETTINGS_FILE = os.path.join(self._tmp.name, 'settings.json')
+        self._cfg = {
+            k: getattr(config, k)
+            for k in (
+                'SAVE_RECORDINGS', 'RECORDINGS_RETENTION_MODE',
+                'RECORDINGS_RETENTION_DAYS', 'RECORDINGS_MAX_BYTES',
+            )
+        }
+        # Hermetic Moonshine cache so model state never reads the dev machine.
+        self._prev_moon = os.environ.get('SAY_MOONSHINE_CACHE')
+        os.environ['SAY_MOONSHINE_CACHE'] = os.path.join(self._tmp.name, 'moon')
         self.app = create_app(store=self.store, auth_token='secret')
         self.client = TestClient(self.app)
 
     def tearDown(self):
+        import config
+        import settings
+
+        settings.SETTINGS_FILE = self._settings_file
+        settings.SETTINGS_DIR = self._settings_dir
+        for k, v in self._cfg.items():
+            setattr(config, k, v)
+        if self._prev_moon is None:
+            os.environ.pop('SAY_MOONSHINE_CACHE', None)
+        else:
+            os.environ['SAY_MOONSHINE_CACHE'] = self._prev_moon
         self.client.close()
         self.store.close()
         self._tmp.cleanup()
@@ -150,6 +179,64 @@ class ApiTests(unittest.TestCase):
                 else:
                     os.environ['HF_HUB_CACHE'] = prev
         self.assertEqual(r.status_code, 507)
+
+    # ── Recordings endpoints ─────────────────────────────────────────────
+
+    def test_recordings_requires_auth(self):
+        self.assertEqual(self.client.get('/recordings').status_code, 401)
+
+    def test_recordings_config_defaults_and_update(self):
+        cfg = self.client.get('/recordings/config?token=secret').json()
+        self.assertIn('save_recordings', cfg)
+        self.assertIn('retention_mode', cfg)
+        self.assertIn('total_bytes', cfg)
+        r = self.client.post(
+            '/recordings/config',
+            json={'save_recordings': True, 'retention_mode': 'keep_all'},
+            headers={'Authorization': 'Bearer secret'},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()['save_recordings'])
+
+    def test_recordings_config_rejects_bad_mode(self):
+        r = self.client.post(
+            '/recordings/config',
+            json={'retention_mode': 'nope'},
+            headers={'Authorization': 'Bearer secret'},
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_recording_audio_roundtrip_and_delete(self):
+        import numpy as np
+        import recordings
+
+        tid = self.store.insert(
+            text='clip', audio_seconds=1.0, inference_seconds=0.1, model='m',
+            inject_method='accessibility', target_app=None, ts_utc=_now(),
+        )
+        recordings.save_for_transcript(self.store, tid, np.zeros(16000, dtype=np.float32))
+
+        listed = self.client.get('/recordings?token=secret').json()
+        self.assertTrue(any(x['id'] == tid for x in listed))
+
+        ra = self.client.get(f'/recordings/{tid}/audio?token=secret')
+        self.assertEqual(ra.status_code, 200)
+        self.assertTrue(ra.headers['content-type'].startswith('audio/wav'))
+        self.assertTrue(ra.content.startswith(b'RIFF'))
+
+        rd = self.client.delete(
+            f'/recordings/{tid}', headers={'Authorization': 'Bearer secret'}
+        )
+        self.assertEqual(rd.status_code, 200)
+        self.assertTrue(rd.json()['deleted'])
+        self.assertEqual(
+            self.client.get(f'/recordings/{tid}/audio?token=secret').status_code, 404
+        )
+
+    def test_recordings_export_empty(self):
+        r = self.client.post('/recordings/export?token=secret')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['count'], 0)
 
 
 if __name__ == '__main__':

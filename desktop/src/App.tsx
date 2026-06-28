@@ -6,6 +6,7 @@ import { HotkeyPill } from './components/HotkeyPill';
 import { Home } from './routes/Home';
 import { Insights } from './routes/Insights';
 import { Models } from './routes/Models';
+import { Recordings } from './routes/Recordings';
 
 export default function App() {
   const navigate = useNavigate();
@@ -21,6 +22,9 @@ export default function App() {
       } else if ((e.metaKey || e.ctrlKey) && e.key === '3') {
         e.preventDefault();
         navigate('/models');
+      } else if ((e.metaKey || e.ctrlKey) && e.key === '4') {
+        e.preventDefault();
+        navigate('/recordings');
       }
     };
     window.addEventListener('keydown', onKey);
@@ -47,6 +51,7 @@ export default function App() {
             <Route path="/" element={<Home />} />
             <Route path="/insights" element={<Insights />} />
             <Route path="/models" element={<Models />} />
+            <Route path="/recordings" element={<Recordings />} />
             <Route path="*" element={<Home />} />
           </Routes>
         </div>

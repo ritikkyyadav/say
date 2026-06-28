@@ -524,7 +524,7 @@ def _run_server_only() -> None:
             if listener_info.fell_back and listener_info.kind == 'legacy':
                 fn_error = (
                     'Fn key requires Accessibility permission for '
-                    'Say.app. Falling back to ctrl+space, which still '
+                    'Oceanus. Falling back to ctrl+space, which still '
                     'needs Input Monitoring permission to receive events.'
                 )
         else:

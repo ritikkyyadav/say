@@ -293,7 +293,8 @@ class DictationController:
                 success=True,
             )
             try:
-                get_store().insert(
+                store = get_store()
+                transcript_id = store.insert(
                     text=text,
                     audio_seconds=duration,
                     inference_seconds=inference_seconds,
@@ -302,6 +303,7 @@ class DictationController:
                     target_app=target_app,
                     success=True,
                 )
+                self._save_recording(store, transcript_id, audio)
             except Exception:
                 _log.exception('Failed to persist transcript to store')
             return True
@@ -347,6 +349,22 @@ class DictationController:
 
         self._emit(DictationState.READY, 'Ready — recording cancelled')
         return True
+
+    def _save_recording(self, store: Any, transcript_id: int, audio: Any) -> None:
+        """Persist the clip's audio when the user has opted into recordings.
+
+        Best-effort and fully self-contained: a failure here must never
+        affect a dictation that has already been transcribed and injected.
+        """
+        if not getattr(config, 'SAVE_RECORDINGS', False):
+            return
+        try:
+            import recordings
+
+            if recordings.save_for_transcript(store, transcript_id, audio):
+                recordings.enforce_retention(store)
+        except Exception:
+            _log.exception('Recording save failed (non-fatal)')
 
     def _duration(self, audio) -> float:
         duration = getattr(self.recorder, 'duration', None)

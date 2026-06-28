@@ -98,6 +98,7 @@ export type ModelInfo = {
   recommended: boolean;
   order: number;
   description: string;
+  backend: 'whisper-mlx' | 'moonshine' | string;
   downloaded: boolean;
   bundled: boolean;
   size_bytes: number;
@@ -109,6 +110,42 @@ export type ModelsResponse = {
   active: string;
   cache_bytes: number;
   models: ModelInfo[];
+};
+
+// One saved audio receipt: a dictation's WAV plus the transcript it produced.
+export type Recording = {
+  id: number;
+  ts_utc: string;
+  text: string;
+  word_count: number;
+  audio_seconds: number;
+  model: string;
+  inject_method: string;
+  target_app: string | null;
+  success: boolean;
+  size_bytes: number;
+  has_audio: boolean;
+};
+
+export type RetentionMode = 'keep_all' | 'days' | 'size';
+
+export type RecordingsConfig = {
+  save_recordings: boolean;
+  retention_mode: RetentionMode;
+  retention_days: number;
+  max_bytes: number;
+  total_bytes: number;
+  count: number;
+};
+
+export type RecordingsConfigPatch = Partial<
+  Pick<RecordingsConfig, 'save_recordings' | 'retention_mode' | 'retention_days' | 'max_bytes'>
+>;
+
+export type ExportResult = {
+  path: string | null;
+  count: number;
+  bytes: number;
 };
 
 let cachedEndpoint: EngineEndpoint | null = null;
@@ -272,6 +309,23 @@ export const api = {
   downloadModel: (id: string) => sendJSON<ModelDownload>('POST', `/models/${id}/download`),
   cancelDownload: (id: string) => sendJSON<{ cancelled: boolean }>('POST', `/models/${id}/cancel`),
   deleteModel: (id: string) => sendJSON<Record<string, never>>('DELETE', `/models/${id}`),
+
+  // ── Recordings (audio receipts) ───────────────────────────────────────
+  recordings: (limit = 500) => getJSON<Recording[]>(`/recordings?limit=${limit}`),
+  recordingsConfig: () => getJSON<RecordingsConfig>('/recordings/config'),
+  setRecordingsConfig: (patch: RecordingsConfigPatch) =>
+    sendJSON<RecordingsConfig>('POST', '/recordings/config', patch),
+  exportRecordings: () => sendJSON<ExportResult>('POST', '/recordings/export'),
+  deleteRecording: (id: number) => sendJSON<{ deleted: boolean }>('DELETE', `/recordings/${id}`),
+  clearRecordings: () => sendJSON<{ deleted: number }>('DELETE', '/recordings'),
+  // Fetch a clip's WAV with the bearer header and hand back a blob: URL the
+  // <audio> element can play. Caller is responsible for URL.revokeObjectURL.
+  recordingAudioUrl: async (id: number): Promise<string> => {
+    const ep = await getEngineEndpoint();
+    const r = await fetch(url(ep, `/recordings/${id}/audio`), { headers: authHeaders(ep) });
+    if (!r.ok) throw new Error(`/recordings/${id}/audio → HTTP ${r.status}`);
+    return URL.createObjectURL(await r.blob());
+  },
 };
 
 export type PrivacyPane = 'microphone' | 'accessibility' | 'input-monitoring';
@@ -279,6 +333,15 @@ export type PrivacyPane = 'microphone' | 'accessibility' | 'input-monitoring';
 export async function openPrivacySettings(pane: PrivacyPane): Promise<void> {
   try {
     await invokeTauri<void>('open_privacy_settings', { pane });
+  } catch {
+    /* dev / non-Tauri — silently no-op */
+  }
+}
+
+// Reveal a file/folder in Finder (selecting it). Used after exporting a ZIP.
+export async function revealPath(path: string): Promise<void> {
+  try {
+    await invokeTauri<void>('reveal_path', { path });
   } catch {
     /* dev / non-Tauri — silently no-op */
   }

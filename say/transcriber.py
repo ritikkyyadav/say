@@ -1,13 +1,17 @@
-"""On-device Whisper transcription through mlx-whisper.
+"""On-device speech-to-text with a pluggable backend.
 
-The Transcriber owns the model identity (`_model_path`) and the loaded
-state. mlx-whisper internally caches loaded model weights keyed by
-`path_or_hf_repo`, so repeated `transcribe()` calls with the same path
-do not reload — but this is implementation detail of mlx-whisper, so
-the library version is pinned in requirements.txt.
+The Transcriber owns the model identity (`_model_path`, a catalog id) and
+the loaded state. It dispatches by the model's `backend` (see
+`model_catalog.py`):
 
-The model can be swapped at runtime via `swap_model(...)`. The next
-transcription warms the new model.
+  - 'whisper-mlx' — OpenAI Whisper via mlx-whisper (multilingual, HF cache).
+  - 'moonshine'   — Moonshine ONNX via `moonshine_voice` (English, no torch),
+                    the small bundled default.
+
+Heavy runtimes (mlx_whisper / moonshine_voice) are imported lazily inside
+the load path so neither is pulled in until a model of that backend is
+actually used. The model can be swapped at runtime via `swap_model(...)`;
+the next transcription warms the new model.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import time
 from threading import Lock
 
 import config
+import model_catalog
 from logging_setup import get_logger
 
 _log = get_logger('transcriber')
@@ -127,6 +132,8 @@ class Transcriber:
     def __init__(self, model_path: str | None = None):
         self._model_path = model_path or config.MODEL
         self._mlx_whisper = None
+        self._ms = None            # moonshine_voice Transcriber, when active
+        self._backend: str | None = None
         self._loaded = False
         self._lock = Lock()
 
@@ -137,6 +144,11 @@ class Transcriber:
     @property
     def model_path(self) -> str:
         return self._model_path
+
+    @staticmethod
+    def _backend_for(model_id: str) -> str:
+        info = model_catalog.get(model_id)
+        return info.backend if info is not None else 'whisper-mlx'
 
     def _resolve_model_path(self, requested: str) -> str:
         """Prefer a bundled copy of the model under Resources/models/<name>/.
@@ -196,6 +208,30 @@ class Transcriber:
         if status_cb is None:
             status_cb = _log.info
 
+        if self._backend_for(self._model_path) == 'moonshine':
+            if (
+                model_catalog.bundled_dir(self._model_path)
+                or model_catalog.is_downloaded(self._model_path)
+            ):
+                status_cb('Model already present.')
+                return
+            status_cb(f'Downloading {self._model_path}...')
+            try:
+                from pathlib import Path
+
+                import moonshine_voice as mv
+
+                mv.get_model_for_language(
+                    'en',
+                    mv.ModelArch.MEDIUM_STREAMING,
+                    cache_root=Path(model_catalog.moonshine_cache_root()),
+                )
+            except Exception as exc:
+                status_cb(f'Download failed: {exc}')
+                raise
+            status_cb('Model download complete.')
+            return
+
         resolved = self._resolve_model_path(self._model_path)
         if os.path.isdir(resolved):
             status_cb('Model already cached.')
@@ -216,44 +252,90 @@ class Transcriber:
         status_cb('Model download complete.')
 
     def load(self) -> None:
-        """Load and warm up the Whisper model. Idempotent."""
+        """Load and warm up the active model. Idempotent. Dispatches by backend."""
         with self._lock:
             if self._loaded:
                 return
-
-            resolved = self._resolve_model_path(self._model_path)
-            _log.info('Loading model: %s', resolved)
-            t0 = time.time()
-
-            import mlx_whisper
-            import numpy as np
-
-            self._mlx_whisper = mlx_whisper
-            self._resolved_path = resolved
-
-            warmup_samples = max(
-                int(config.MIN_AUDIO_SECONDS * config.SAMPLE_RATE),
-                int(0.2 * config.SAMPLE_RATE),
-            )
-            warmup = np.zeros(warmup_samples, dtype='float32')
-            self._mlx_whisper.transcribe(
-                warmup,
-                path_or_hf_repo=resolved,
-                language=config.LANGUAGE if config.LANGUAGE else None,
-                fp16=True,
-            )
-
-            elapsed = time.time() - t0
+            self._backend = self._backend_for(self._model_path)
+            if self._backend == 'moonshine':
+                self._load_moonshine()
+            else:
+                self._load_whisper()
             self._loaded = True
-            _log.info('Model loaded in %.1fs', elapsed)
+
+    def _load_whisper(self) -> None:
+        """Load + warm an mlx-whisper model (call under self._lock)."""
+        resolved = self._resolve_model_path(self._model_path)
+        _log.info('Loading model: %s', resolved)
+        t0 = time.time()
+
+        import mlx_whisper
+        import numpy as np
+
+        self._mlx_whisper = mlx_whisper
+        self._resolved_path = resolved
+
+        warmup_samples = max(
+            int(config.MIN_AUDIO_SECONDS * config.SAMPLE_RATE),
+            int(0.2 * config.SAMPLE_RATE),
+        )
+        warmup = np.zeros(warmup_samples, dtype='float32')
+        self._mlx_whisper.transcribe(
+            warmup,
+            path_or_hf_repo=resolved,
+            language=config.LANGUAGE if config.LANGUAGE else None,
+            fp16=True,
+        )
+        _log.info('Whisper model loaded in %.1fs', time.time() - t0)
+
+    def _load_moonshine(self) -> None:
+        """Load + warm the Moonshine ONNX model (call under self._lock).
+
+        Prefers a bundled copy under Resources/models/<leaf>/ so first launch
+        is fully offline; otherwise resolves (downloading if needed) into the
+        moonshine cache.
+        """
+        from pathlib import Path
+
+        import moonshine_voice as mv
+        from moonshine_voice.transcriber import Transcriber as _MoonshineRT
+
+        bundled = model_catalog.bundled_dir(self._model_path)
+        if bundled:
+            model_dir: str = bundled
+        else:
+            resolved, _arch = mv.get_model_for_language(
+                'en',
+                mv.ModelArch.MEDIUM_STREAMING,
+                cache_root=Path(model_catalog.moonshine_cache_root()),
+            )
+            model_dir = str(resolved)
+
+        _log.info('Loading Moonshine model: %s', model_dir)
+        t0 = time.time()
+        self._ms = _MoonshineRT(model_dir, model_arch=mv.ModelArch.MEDIUM_STREAMING)
+        # Warm up so the first real dictation isn't slowed by lazy init.
+        try:
+            warm = [0.0] * int(0.3 * config.SAMPLE_RATE)
+            self._ms.transcribe_without_streaming(warm, sample_rate=config.SAMPLE_RATE)
+        except Exception:
+            _log.debug('Moonshine warmup skipped', exc_info=True)
+        _log.info('Moonshine model loaded in %.1fs', time.time() - t0)
 
     def swap_model(self, new_model_path: str) -> None:
-        """Switch to a different Whisper model. The next transcribe() call warms it."""
+        """Switch models. The next transcribe() call loads + warms the new one."""
         with self._lock:
             if new_model_path == self._model_path and self._loaded:
                 return
+            if self._ms is not None:
+                try:
+                    self._ms.close()
+                except Exception:
+                    pass
+                self._ms = None
             self._model_path = new_model_path
             self._loaded = False
+            self._backend = None
 
     def transcribe(self, audio) -> str:
         """Transcribe an audio buffer to text.
@@ -268,6 +350,17 @@ class Transcriber:
         if len(audio) < min_samples:
             return ''
 
+        if self._backend == 'moonshine':
+            text = self._transcribe_moonshine(audio)
+        else:
+            text = self._transcribe_whisper(audio)
+
+        active_filter = _build_active_filter(config.LANGUAGE)
+        if _normalize_for_filter(text) in active_filter:
+            return ''
+        return text
+
+    def _transcribe_whisper(self, audio) -> str:
         t0 = time.time()
         kwargs = {
             'path_or_hf_repo': getattr(self, '_resolved_path', self._model_path),
@@ -280,13 +373,23 @@ class Transcriber:
 
         result = self._mlx_whisper.transcribe(audio, **kwargs)
         text = result.get('text', '').strip()
+        _log.info(
+            '%.1fs audio -> %.1fs inference',
+            len(audio) / config.SAMPLE_RATE, time.time() - t0,
+        )
+        return text
 
-        elapsed = time.time() - t0
-        duration = len(audio) / config.SAMPLE_RATE
-        _log.info('%.1fs audio -> %.1fs inference', duration, elapsed)
-
-        active_filter = _build_active_filter(config.LANGUAGE)
-        if _normalize_for_filter(text) in active_filter:
-            return ''
-
+    def _transcribe_moonshine(self, audio) -> str:
+        t0 = time.time()
+        try:
+            data = audio.tolist()
+        except AttributeError:
+            data = list(audio)
+        tx = self._ms.transcribe_without_streaming(data, sample_rate=config.SAMPLE_RATE)
+        lines = getattr(tx, 'lines', None) or []
+        text = ' '.join(getattr(ln, 'text', '') for ln in lines).strip()
+        _log.info(
+            '%.1fs audio -> %.1fs inference (moonshine)',
+            len(audio) / config.SAMPLE_RATE, time.time() - t0,
+        )
         return text

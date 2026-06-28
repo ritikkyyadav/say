@@ -52,6 +52,10 @@ class AudioRecorder:
         self._event_callback = None
         self._max_frames_dispatched = False
         self._capturing = False
+        # Running count of captured samples for the current recording. Lets the
+        # audio callback enforce the duration cap in O(1) instead of re-summing
+        # every frame, which matters for long (multi-minute) dictations.
+        self._captured_samples = 0
 
         pre_roll_samples = max(int(config.PRE_ROLL_SECONDS * config.SAMPLE_RATE), 1)
         self._pre_roll_buffer: deque = deque(maxlen=pre_roll_samples)
@@ -199,6 +203,7 @@ class AudioRecorder:
                 ).reshape(-1, 1)
                 self._frames.append(seed)
 
+            self._captured_samples = sum(f.shape[0] for f in self._frames)
             self._capturing = True
 
         self._ensure_stream_open()
@@ -220,11 +225,12 @@ class AudioRecorder:
                 else:
                     capturing = True
                     max_frames = config.SAMPLE_RATE * config.MAX_RECORDING_SECONDS
-                    total_samples = sum(frame.shape[0] for frame in self._frames)
+                    total_samples = self._captured_samples
                     if total_samples < max_frames:
                         self._frames.append(indata.copy())
+                        self._captured_samples = total_samples + indata.shape[0]
                         if (
-                            total_samples + indata.shape[0] >= max_frames
+                            self._captured_samples >= max_frames
                             and not self._max_frames_dispatched
                         ):
                             self._max_frames_dispatched = True
@@ -269,6 +275,7 @@ class AudioRecorder:
             else:
                 audio = np.concatenate(self._frames, axis=0).flatten()
             self._frames = []
+            self._captured_samples = 0
         self._schedule_close()
         return audio
 
@@ -277,6 +284,7 @@ class AudioRecorder:
         with self._lock:
             self._capturing = False
             self._frames = []
+            self._captured_samples = 0
             self._pre_roll_buffer.clear()
             self._amplitude_history = deque(
                 [0.0] * _AMPLITUDE_HISTORY_SIZE, maxlen=_AMPLITUDE_HISTORY_SIZE
@@ -294,6 +302,7 @@ class AudioRecorder:
             self._cancel_close_timer()
             self._capturing = False
             self._frames = []
+            self._captured_samples = 0
             self._pre_roll_buffer.clear()
 
         self._close_stream()

@@ -12,10 +12,12 @@ unit-testable: point `HF_HUB_CACHE` at a temp dir and the cache-state helpers
 read from there. Downloading and swapping live models is the job of
 `model_manager.py`; this module only describes and inspects.
 
-All shipped models are mlx-whisper compatible (the engine in
-`transcriber.py` loads them via `mlx_whisper.transcribe(path_or_hf_repo=...)`).
-The `family` field exists so non-Whisper families (e.g. Parakeet) can be added
-later behind a transcribe-dispatch without reshaping the catalog.
+Models declare a `backend`: most are mlx-whisper compatible (loaded via
+`mlx_whisper.transcribe(path_or_hf_repo=...)` from the Hugging Face cache),
+while the bundled default is a Moonshine ONNX model run through
+`moonshine_voice` (OnnxRuntime, no torch/MLX) from its own cache layout. The
+cache-state helpers branch on `backend` so each runtime's on-disk layout is
+handled; downloading and swapping live models is the job of `model_manager.py`.
 """
 
 from __future__ import annotations
@@ -43,6 +45,7 @@ class ModelInfo:
     recommended: bool     # Surface as the suggested default
     order: int            # Stable display order (lower = first)
     description: str       # One-line plain-language summary
+    backend: str = 'whisper-mlx'  # 'whisper-mlx' | 'moonshine' — which runtime loads it
 
 
 # ── The catalog ──────────────────────────────────────────────────────────
@@ -53,6 +56,20 @@ class ModelInfo:
 
 CATALOG: tuple[ModelInfo, ...] = (
     ModelInfo(
+        id='moonshine/medium-streaming-en',
+        name='Moonshine Medium',
+        family='moonshine',
+        params='245M',
+        download_bytes=460_000_000,
+        speed=5,
+        accuracy=4,
+        languages='english',
+        recommended=True,
+        order=0,
+        description='Ultra-fast English model. Bundled, tiny, and runs offline out of the box.',
+        backend='moonshine',
+    ),
+    ModelInfo(
         id='mlx-community/whisper-large-v3-turbo',
         name='Large v3 Turbo',
         family='whisper',
@@ -61,9 +78,9 @@ CATALOG: tuple[ModelInfo, ...] = (
         speed=4,
         accuracy=4,
         languages='multilingual',
-        recommended=True,
-        order=0,
-        description='Near large-v3 accuracy at ~4× the speed. The best daily driver.',
+        recommended=False,
+        order=1,
+        description='Multilingual. Near large-v3 accuracy at ~4× the speed — the best Whisper daily driver.',
     ),
     ModelInfo(
         id='mlx-community/whisper-large-v3-mlx',
@@ -75,7 +92,7 @@ CATALOG: tuple[ModelInfo, ...] = (
         accuracy=5,
         languages='multilingual',
         recommended=False,
-        order=1,
+        order=2,
         description='Highest accuracy. Best for accents, noise, and rare vocabulary.',
     ),
     ModelInfo(
@@ -88,7 +105,7 @@ CATALOG: tuple[ModelInfo, ...] = (
         accuracy=4,
         languages='multilingual',
         recommended=False,
-        order=2,
+        order=3,
         description='Balanced accuracy and speed when Turbo is unavailable.',
     ),
     ModelInfo(
@@ -101,7 +118,7 @@ CATALOG: tuple[ModelInfo, ...] = (
         accuracy=3,
         languages='multilingual',
         recommended=False,
-        order=3,
+        order=4,
         description='Light on storage and memory, good for short clear speech.',
     ),
     ModelInfo(
@@ -114,7 +131,7 @@ CATALOG: tuple[ModelInfo, ...] = (
         accuracy=2,
         languages='multilingual',
         recommended=False,
-        order=4,
+        order=5,
         description='Very fast and tiny. Handy on older hardware or tight disks.',
     ),
     ModelInfo(
@@ -127,7 +144,7 @@ CATALOG: tuple[ModelInfo, ...] = (
         accuracy=1,
         languages='multilingual',
         recommended=False,
-        order=5,
+        order=6,
         description='Smallest and fastest. Best for testing or quick notes.',
     ),
 )
@@ -180,6 +197,43 @@ def _repo_folder(model_id: str) -> str:
 def repo_dir(model_id: str) -> str:
     """Absolute path to the model's folder in the HF cache (may not exist)."""
     return os.path.join(_cache_root(), _repo_folder(model_id))
+
+
+# ── Moonshine (ONNX) backend cache ───────────────────────────────────────
+
+
+def moonshine_cache_root() -> str:
+    """Root dir where Moonshine ONNX models are downloaded (env-overridable)."""
+    return os.environ.get('SAY_MOONSHINE_CACHE') or os.path.expanduser('~/.cache/moonshine')
+
+
+def moonshine_model_dir(model_id: str) -> str:
+    """On-disk dir of a (downloaded) Moonshine model — may not exist.
+
+    Mirrors the layout `moonshine_voice` writes under its cache root:
+    `<root>/download.moonshine.ai/model/<leaf>/quantized`.
+    """
+    leaf = model_id.split('/')[-1]
+    return os.path.join(
+        moonshine_cache_root(), 'download.moonshine.ai', 'model', leaf, 'quantized'
+    )
+
+
+def _moonshine_present(model_dir: str) -> bool:
+    """True if a Moonshine model dir holds real (non-trivial) .ort weights."""
+    if not os.path.isdir(model_dir):
+        return False
+    try:
+        for fn in os.listdir(model_dir):
+            if fn.endswith('.ort'):
+                try:
+                    if os.path.getsize(os.path.join(model_dir, fn)) > 100_000:
+                        return True
+                except OSError:
+                    continue
+    except OSError:
+        return False
+    return False
 
 
 def bundled_dir(model_id: str) -> str | None:
@@ -254,6 +308,9 @@ def is_downloaded(model_id: str) -> bool:
     """Whether the model is ready to load offline (cached or bundled)."""
     if bundled_dir(model_id) is not None:
         return True
+    info = get(model_id)
+    if info is not None and info.backend == 'moonshine':
+        return _moonshine_present(moonshine_model_dir(model_id))
     return _weights_present(repo_dir(model_id))
 
 
@@ -285,6 +342,10 @@ def disk_usage_bytes(model_id: str) -> int:
     bundled = bundled_dir(model_id)
     if bundled is not None:
         return _dir_real_bytes(bundled)
+    info = get(model_id)
+    if info is not None and info.backend == 'moonshine':
+        d = moonshine_model_dir(model_id)
+        return _dir_real_bytes(d) if os.path.isdir(d) else 0
     repo = repo_dir(model_id)
     blobs = os.path.join(repo, 'blobs')
     if os.path.isdir(blobs):

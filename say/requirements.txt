@@ -10,6 +10,13 @@
 # Core — Whisper inference on Apple Silicon
 mlx-whisper==0.4.3
 
+# Bundled default STT — Moonshine Medium (ONNX, English). Runs via OnnxRuntime
+# only (NO torch/MLX); ships its own libmoonshine + libonnxruntime dylibs and
+# is loaded through `moonshine_voice`. Optional bigger Whisper models download
+# on demand. Pinned: the bundled on-disk layout under ~/.cache/moonshine and
+# the ModelArch enum are version-coupled (see model_catalog.moonshine_model_dir).
+moonshine-voice==0.0.62
+
 # Audio capture
 sounddevice==0.5.5
 numpy>=2.0,<3.0

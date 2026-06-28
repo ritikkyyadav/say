@@ -34,11 +34,16 @@ class ModelCatalogTests(unittest.TestCase):
         # Neutralize bundled-model discovery so cache tests are deterministic.
         self._bundle_dir = tempfile.mkdtemp(prefix='say-bundle-')
         os.environ['SAY_BUNDLED_MODELS_DIR'] = self._bundle_dir
+        # Hermetic Moonshine cache so backend state never reads the dev machine.
+        self._prev_moon = os.environ.get('SAY_MOONSHINE_CACHE')
+        self._moon_dir = tempfile.mkdtemp(prefix='say-moon-')
+        os.environ['SAY_MOONSHINE_CACHE'] = self._moon_dir
 
     def tearDown(self):
         for key, prev in (
             ('HF_HUB_CACHE', self._prev_cache),
             ('SAY_BUNDLED_MODELS_DIR', self._prev_bundle),
+            ('SAY_MOONSHINE_CACHE', self._prev_moon),
         ):
             if prev is None:
                 os.environ.pop(key, None)
@@ -48,6 +53,7 @@ class ModelCatalogTests(unittest.TestCase):
         import shutil
 
         shutil.rmtree(self._bundle_dir, ignore_errors=True)
+        shutil.rmtree(self._moon_dir, ignore_errors=True)
 
     def test_catalog_is_ordered_and_unique(self):
         cat = mc.catalog()
@@ -100,6 +106,25 @@ class ModelCatalogTests(unittest.TestCase):
         for key in ('id', 'name', 'family', 'downloaded', 'bundled', 'size_bytes', 'speed'):
             self.assertIn(key, d)
         self.assertIsInstance(d['downloaded'], bool)
+
+    def test_moonshine_backend_cache_state(self):
+        mid = 'moonshine/medium-streaming-en'
+        info = mc.get(mid)
+        self.assertIsNotNone(info)
+        self.assertEqual(info.backend, 'moonshine')
+        # Absent until we lay down a real .ort weight in the moonshine layout.
+        self.assertFalse(mc.is_downloaded(mid))
+        self.assertEqual(mc.disk_usage_bytes(mid), 0)
+
+        d = mc.moonshine_model_dir(mid)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, 'encoder.ort'), 'wb') as f:
+            f.write(b'\0' * 2_000_000)
+        self.assertTrue(mc.is_downloaded(mid))
+        self.assertEqual(mc.disk_usage_bytes(mid), 2_000_000)
+
+    def test_default_model_is_moonshine_backend(self):
+        self.assertEqual(mc.get(config.MODEL).backend, 'moonshine')
 
 
 if __name__ == '__main__':

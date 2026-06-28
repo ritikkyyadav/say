@@ -13,7 +13,9 @@ The desktop UI reads progress by polling `GET /models` (no SSE coupling), so a
 download surfaces as a rising `percent` on the model's status.
 
 Privacy note: downloads come straight from Hugging Face to this machine's
-cache and never touch a Say server. Audio is still never written to disk.
+cache and never touch a Say server. Audio stays on this machine too — kept
+in memory by default, and only written to disk if the user opts into
+recordings (see `recordings.py`); it is never uploaded.
 """
 
 from __future__ import annotations
@@ -245,12 +247,29 @@ class ModelManager:
             )
             st.update(fields)
 
+    @staticmethod
+    def _storage_for(model_id: str) -> tuple[str, str]:
+        """Return (on-disk model dir, realpath of its cache root) by backend.
+
+        Centralizes the whisper-HF vs moonshine layout split so delete +
+        partial-cleanup stay backend-correct and cache-root guarded.
+        """
+        info = model_catalog.get(model_id)
+        if info is not None and info.backend == 'moonshine':
+            return (
+                model_catalog.moonshine_model_dir(model_id),
+                os.path.realpath(model_catalog.moonshine_cache_root()),
+            )
+        return (
+            model_catalog.repo_dir(model_id),
+            os.path.realpath(model_catalog._cache_root()),
+        )
+
     def _cleanup_partial(self, model_id: str) -> None:
         """Remove a half-written cache dir (after cancel) — cache-root guarded."""
-        repo = model_catalog.repo_dir(model_id)
-        cache_root = os.path.realpath(model_catalog._cache_root())
-        if os.path.realpath(repo).startswith(cache_root) and os.path.isdir(repo):
-            shutil.rmtree(repo, ignore_errors=True)
+        target, cache_root = self._storage_for(model_id)
+        if os.path.realpath(target).startswith(cache_root) and os.path.isdir(target):
+            shutil.rmtree(target, ignore_errors=True)
 
     def _run_download(self, model_id: str) -> None:
         info = model_catalog.get(model_id)
@@ -268,10 +287,14 @@ class ModelManager:
         poller.start()
 
         try:
-            from huggingface_hub import snapshot_download
+            backend = info.backend if info else 'whisper-mlx'
+            _log.info('Downloading model %s (backend=%s)', model_id, backend)
+            if backend == 'moonshine':
+                self._download_moonshine(model_id, cancel_ev)
+            else:
+                from huggingface_hub import snapshot_download
 
-            _log.info('Downloading model %s', model_id)
-            snapshot_download(repo_id=model_id, tqdm_class=_cancellable_tqdm(cancel_ev))
+                snapshot_download(repo_id=model_id, tqdm_class=_cancellable_tqdm(cancel_ev))
             self._set_status(model_id, state=DONE, percent=100, error=None)
             _log.info('Model download complete: %s', model_id)
         except DownloadCancelled:
@@ -286,6 +309,26 @@ class ModelManager:
             stop_poll.set()
             with self._lock:
                 self._cancels.pop(model_id, None)
+
+    def _download_moonshine(self, model_id: str, cancel_ev: threading.Event) -> None:
+        """Fetch a Moonshine model into its cache via moonshine_voice.
+
+        Cancellation is best-effort: the underlying fetch is blocking, so a
+        cancel only lands after it returns (the model is bundled by default,
+        so re-downloads are rare). The progress poller drives percent from the
+        growing on-disk size meanwhile.
+        """
+        from pathlib import Path
+
+        import moonshine_voice as mv
+
+        mv.get_model_for_language(
+            'en',
+            mv.ModelArch.MEDIUM_STREAMING,
+            cache_root=Path(model_catalog.moonshine_cache_root()),
+        )
+        if cancel_ev.is_set():
+            raise DownloadCancelled()
 
     def _poll_progress(self, model_id: str, expected: int, stop: threading.Event) -> None:
         """Drive percent from *real* bytes-on-disk until the download finishes.
@@ -320,13 +363,12 @@ class ModelManager:
             if st and st['state'] == DOWNLOADING:
                 raise ValueError('Download in progress. Try again when it finishes.')
 
-        repo = model_catalog.repo_dir(model_id)
-        cache_root = os.path.realpath(model_catalog._cache_root())
-        # Safety: only ever delete inside the HF cache root.
-        if not os.path.realpath(repo).startswith(cache_root):
+        target, cache_root = self._storage_for(model_id)
+        # Safety: only ever delete inside the model's own cache root.
+        if not os.path.realpath(target).startswith(cache_root):
             raise ValueError('Refusing to delete outside the model cache.')
-        if os.path.isdir(repo):
-            shutil.rmtree(repo, ignore_errors=True)
+        if os.path.isdir(target):
+            shutil.rmtree(target, ignore_errors=True)
             _log.info('Deleted cached model %s', model_id)
         with self._lock:
             self._status.pop(model_id, None)

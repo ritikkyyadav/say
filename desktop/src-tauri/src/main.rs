@@ -60,6 +60,41 @@ fn open_privacy_settings(pane: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Reveal a specific file or folder in the system file manager, selecting it.
+/// Used after exporting a recordings ZIP so the user can grab it immediately.
+#[tauri::command]
+fn reveal_path(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg("/select,")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // No portable "reveal + select"; open the containing directory.
+        let dir = std::path::Path::new(&path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(path.clone());
+        std::process::Command::new("xdg-open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn reveal_logs_dir() -> Result<(), String> {
     let path = sidecar::logs_dir();
@@ -116,6 +151,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_engine_endpoint,
             reveal_logs_dir,
+            reveal_path,
             open_privacy_settings
         ])
         .setup(|app| {

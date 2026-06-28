@@ -26,21 +26,21 @@ _STEPS = [
     (
         'Microphone',
         'microphone',
-        'Say needs Microphone access to record your voice.\n\n'
-        'Open Settings → check the box next to your Terminal or Say.app.',
+        'Oceanus needs Microphone access to record your voice.\n\n'
+        'Open Settings → check the box next to Oceanus.',
     ),
     (
         'Accessibility',
         'accessibility',
-        'Say uses Accessibility to inject transcribed text into the '
+        'Oceanus uses Accessibility to inject transcribed text into the '
         'focused app and to watch the Fn key.\n\n'
-        'Open Settings → enable Say (or Terminal/iTerm/Warp).',
+        'Open Settings → enable Oceanus.',
     ),
     (
         'Input Monitoring',
         'input-monitoring',
-        'Say needs Input Monitoring to detect the global Fn hotkey.\n\n'
-        'Open Settings → enable Say (or Terminal/iTerm/Warp).',
+        'Oceanus needs Input Monitoring to detect the global Fn hotkey.\n\n'
+        'Open Settings → enable Oceanus.',
     ),
 ]
 
@@ -75,9 +75,9 @@ def _run_alert_chain(alert_fn: Callable, on_finish: Callable[[], None]) -> None:
       0 → cancel/secondary
     """
     alert_fn(
-        title='Welcome to Say',
+        title='Welcome to Oceanus',
         message=(
-            'Say transcribes your speech locally — no cloud, no audio '
+            'Oceanus transcribes your speech locally — no cloud, no audio '
             'files saved.\n\n'
             'We need three macOS permissions before dictation works:\n'
             '  • Microphone\n  • Accessibility\n  • Input Monitoring\n\n'
@@ -97,7 +97,7 @@ def _run_alert_chain(alert_fn: Callable, on_finish: Callable[[], None]) -> None:
             open_privacy_settings(section)
 
     alert_fn(
-        title='Say is ready',
+        title='Oceanus is ready',
         message=(
             'Hold Fn to dictate. Press Fn+Space for hands-free mode.\n\n'
             'If a hotkey does not respond, run "Run Diagnostics" from the '

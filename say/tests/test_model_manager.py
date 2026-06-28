@@ -57,6 +57,10 @@ class ModelManagerTests(unittest.TestCase):
         os.environ['HF_HUB_CACHE'] = self._cache
         self._bundle = tempfile.mkdtemp(prefix='say-mm-bundle-')
         os.environ['SAY_BUNDLED_MODELS_DIR'] = self._bundle
+        # Hermetic Moonshine cache.
+        self._moon = tempfile.mkdtemp(prefix='say-mm-moon-')
+        self._prev_moon = os.environ.get('SAY_MOONSHINE_CACHE')
+        os.environ['SAY_MOONSHINE_CACHE'] = self._moon
 
         self._orig_model = config.MODEL
 
@@ -73,12 +77,13 @@ class ModelManagerTests(unittest.TestCase):
         for key, prev in (
             ('HF_HUB_CACHE', self._prev_cache),
             ('SAY_BUNDLED_MODELS_DIR', self._prev_bundle),
+            ('SAY_MOONSHINE_CACHE', self._prev_moon),
         ):
             if prev is None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = prev
-        for d in (self._tmp, self._cache, self._bundle):
+        for d in (self._tmp, self._cache, self._bundle, self._moon):
             shutil.rmtree(d, ignore_errors=True)
 
     def test_list_models_marks_active(self):
@@ -144,8 +149,20 @@ class ModelManagerTests(unittest.TestCase):
             self.mgr.delete(self.mgr.active_model())
 
     def test_delete_removes_cached_model(self):
-        mid = 'mlx-community/whisper-tiny-mlx'  # not the active (turbo) model
+        mid = 'mlx-community/whisper-tiny-mlx'  # not the active (moonshine) model
         _build_cache_layout(self._cache, mid)
+        self.assertTrue(mc.is_downloaded(mid))
+        self.mgr.delete(mid)
+        self.assertFalse(mc.is_downloaded(mid))
+
+    def test_delete_removes_moonshine_model(self):
+        mid = 'moonshine/medium-streaming-en'
+        # Switch active away (Moonshine is the default) so deletion is allowed.
+        self.mgr.set_active('mlx-community/whisper-small-mlx')
+        d = mc.moonshine_model_dir(mid)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, 'encoder.ort'), 'wb') as f:
+            f.write(b'\0' * 200_000)
         self.assertTrue(mc.is_downloaded(mid))
         self.mgr.delete(mid)
         self.assertFalse(mc.is_downloaded(mid))

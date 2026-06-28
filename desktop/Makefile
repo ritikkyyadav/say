@@ -125,22 +125,26 @@ patch-plist:
 	@find "$(SHELL_APP)" -print0 | xargs -0 -I{} xattr -d com.apple.fileprovider.fpfs#P {} 2>/dev/null || true
 	@find "$(SHELL_APP)" -print0 | xargs -0 -I{} xattr -d com.apple.provenance {} 2>/dev/null || true
 	@xattr -cr "$(SHELL_APP)" 2>/dev/null || true
-	@# Re-sign the inner engine bundle with a stable identifier so its
-	@# TCC entries don't get orphaned on every rebuild, then sign the
-	@# outer shell.
-	@codesign --force --sign - --identifier com.oceanus.dictation \
-		"$(SHELL_APP)/Contents/Resources/OceanusEngine.app/Contents/MacOS/Oceanus" 2>/dev/null || true
-	@codesign --force --sign - --identifier com.oceanus.dictation.desktop \
-		"$(SHELL_APP)/Contents/MacOS/Oceanus" 2>/dev/null || true
-	@codesign --force --sign - --identifier com.oceanus.dictation \
-		"$(SHELL_APP)/Contents/Resources/OceanusEngine.app" 2>/dev/null || \
-		echo "[!] engine bundle resign failed (non-fatal — inner binary already signed)"
-	@codesign --force --sign - --identifier com.oceanus.dictation.desktop \
-		"$(SHELL_APP)" 2>/dev/null || \
-		echo "[!] shell bundle resign failed — falling back to per-binary signature"
-	@echo "[OK] Re-signed binaries with stable identifiers"
-	@echo "    Shell:  $$(codesign -dv '$(SHELL_APP)/Contents/MacOS/Oceanus' 2>&1 | grep Identifier)"
-	@echo "    Engine: $$(codesign -dv '$(SHELL_APP)/Contents/Resources/OceanusEngine.app/Contents/MacOS/Oceanus' 2>&1 | grep Identifier)"
+	@# The embedded engine (OceanusEngine.app) is ALREADY validly ad-hoc-signed
+	@# by `make -C ../say` (PyInstaller seal + post-model re-seal). Do NOT re-sign
+	@# it here — a post-hoc codesign of that PyInstaller bundle fails on its
+	@# data-in-Frameworks / Python.framework layout and would leave a broken seal,
+	@# which is exactly what blocks macOS from honouring Accessibility/Input-
+	@# Monitoring grants. We only (re-)sign the SHELL, whose Info.plist + binary
+	@# name we just edited. Signing the shell bundle (non-deep) re-seals it and
+	@# validates the nested engine by reference.
+	@echo "[+] Verifying embedded engine seal is intact before signing shell…"
+	@codesign --verify --strict "$(SHELL_APP)/Contents/Resources/OceanusEngine.app" \
+		|| { echo "[!] embedded engine seal is broken — rebuild the engine (make -C ../say all)"; exit 1; }
+	@codesign --force --sign - --identifier com.oceanus.dictation.desktop "$(SHELL_APP)"
+	@echo "[+] Verifying final signatures…"
+	@codesign --verify --strict "$(SHELL_APP)" \
+		|| { echo "[!] shell seal invalid after signing — aborting"; exit 1; }
+	@codesign --verify --strict "$(SHELL_APP)/Contents/Resources/OceanusEngine.app" \
+		|| { echo "[!] engine seal broke while signing shell — aborting"; exit 1; }
+	@echo "[OK] Both bundles validly signed:"
+	@echo "    Shell:  $$(codesign -dv '$(SHELL_APP)' 2>&1 | grep Identifier)"
+	@echo "    Engine: $$(codesign -dv '$(SHELL_APP)/Contents/Resources/OceanusEngine.app' 2>&1 | grep Identifier)"
 
 embed-engine:
 	@if [ ! -d "$(SHELL_APP)" ]; then \
@@ -152,8 +156,14 @@ embed-engine:
 	@echo "[+] Embedding engine into $(SHELL_APP)..."
 	rm -rf "$(EMBED_TARGET)"
 	mkdir -p "$(SHELL_APP)/Contents/Resources"
-	rsync -aL "$(ENGINE_APP)/" "$(EMBED_TARGET)/"
-	@echo "[OK] Embedded engine at $(EMBED_TARGET)"
+	@# Use ditto, NOT `rsync -aL`: the -L flag dereferences symlinks, which
+	@# flattens Python.framework's Versions/Current symlink into a real dir and
+	@# destroys the engine's code-signature seal (codesign then reports the
+	@# bundle "ambiguous"). ditto preserves symlinks + the seal intact.
+	ditto "$(ENGINE_APP)" "$(EMBED_TARGET)"
+	@codesign --verify --strict "$(EMBED_TARGET)" \
+		&& echo "[OK] Embedded engine (seal intact) at $(EMBED_TARGET)" \
+		|| { echo "[!] engine seal broke during embed — aborting"; exit 1; }
 	@du -sh "$(SHELL_APP)" || true
 
 dmg:
