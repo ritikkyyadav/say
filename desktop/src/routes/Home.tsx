@@ -7,8 +7,8 @@
 
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, invalidateEngineEndpoint } from '../lib/api';
-import { fmt, greeting, hm, longDuration } from '../lib/format';
+import { api, invalidateEngineEndpoint, RecordingsConfigPatch } from '../lib/api';
+import { bytes, fmt, greeting, hm, longDuration } from '../lib/format';
 import { CountUp, Reveal } from '../lib/motion';
 import { groupByDay } from '../lib/grouping';
 import { AppShare, Heatmap, HourBars, SavedVsTyping, Spark, WordList } from '../components/Charts';
@@ -17,6 +17,24 @@ import { TranscriptRow } from '../components/TranscriptRow';
 import { PermissionsBanner } from '../components/PermissionsBanner';
 
 const PAGE = 40;
+
+// How much kept audio to hold on to. A cap by default: with no limit one
+// person reached 587 MB in three weeks and nothing on this screen said so.
+const GB = 1024 * 1024 * 1024;
+const KEEP_OPTIONS: { key: string; label: string; patch: RecordingsConfigPatch }[] = [
+  { key: 'size:500', label: 'Keep the newest 500 MB', patch: { retention_mode: 'size', max_bytes: 500 * 1024 * 1024 } },
+  { key: 'size:2', label: 'Keep the newest 2 GB', patch: { retention_mode: 'size', max_bytes: 2 * GB } },
+  { key: 'size:5', label: 'Keep the newest 5 GB', patch: { retention_mode: 'size', max_bytes: 5 * GB } },
+  { key: 'all', label: 'Keep everything', patch: { retention_mode: 'keep_all' } },
+];
+
+function keepKey(mode: string, maxBytes: number): string {
+  if (mode !== 'size') return 'all';
+  const gb = Math.round(maxBytes / GB);
+  if (gb >= 5) return 'size:5';
+  if (gb >= 2) return 'size:2';
+  return 'size:500';
+}
 
 // The engine reads the first name from the OS account, which is often stored
 // lowercase. Greeting someone by a lowercase version of their own name reads
@@ -92,6 +110,13 @@ export function Home() {
 
   const setKeepAudio = useMutation({
     mutationFn: (on: boolean) => api.setRecordingsConfig({ save_recordings: on }),
+    onSuccess: (cfg) => {
+      qc.setQueryData(['recordings-config'], cfg);
+      qc.invalidateQueries({ queryKey: ['transcripts'] });
+    },
+  });
+  const setRetention = useMutation({
+    mutationFn: (patch: RecordingsConfigPatch) => api.setRecordingsConfig(patch),
     onSuccess: (cfg) => {
       qc.setQueryData(['recordings-config'], cfg);
       qc.invalidateQueries({ queryKey: ['transcripts'] });
@@ -319,6 +344,25 @@ export function Home() {
               </button>
               Keep audio
             </label>
+          ) : null}
+          {recCfg.data?.save_recordings ? (
+            <select
+              className="sel"
+              aria-label="How much audio to keep"
+              title={`${bytes(recCfg.data.total_bytes)} on disk now`}
+              value={keepKey(recCfg.data.retention_mode, recCfg.data.max_bytes)}
+              disabled={setRetention.isPending}
+              onChange={(e) => {
+                const opt = KEEP_OPTIONS.find((o) => o.key === e.target.value);
+                if (opt) setRetention.mutate(opt.patch);
+              }}
+            >
+              {KEEP_OPTIONS.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
           ) : null}
           <div className="search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

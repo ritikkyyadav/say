@@ -234,10 +234,14 @@ MENU_BAR_ICON = '🎙'           # Emoji shown in the macOS menu bar
 SAVE_RECORDINGS = False
 
 # Retention policy for saved recordings:
-#   'keep_all' -> never auto-delete (default)
+#   'keep_all' -> never auto-delete
 #   'days'     -> delete clips older than RECORDINGS_RETENTION_DAYS
-#   'size'     -> keep newest clips within RECORDINGS_MAX_BYTES, prune oldest
-RECORDINGS_RETENTION_MODE = 'keep_all'
+#   'size'     -> keep newest clips within RECORDINGS_MAX_BYTES, prune oldest (default)
+#
+# 'size' by default: with 'keep_all' one user reached 406 clips and 587 MB in
+# three weeks with nothing on the Home screen to say so. Anyone who persisted
+# a mode keeps it; the cap only applies where nothing was chosen.
+RECORDINGS_RETENTION_MODE = 'size'
 VALID_RETENTION_MODES = {'keep_all', 'days', 'size'}
 RECORDINGS_RETENTION_DAYS = 30                 # used when mode == 'days'
 RECORDINGS_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB; used when mode == 'size'

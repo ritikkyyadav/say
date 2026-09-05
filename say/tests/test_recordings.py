@@ -159,3 +159,25 @@ class RecordingsTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DefaultPolicyTests(unittest.TestCase):
+    """B12: kept audio must not grow without limit by default."""
+
+    def test_the_shipped_default_is_a_size_cap(self):
+        import importlib
+
+        import config
+
+        saved = {
+            k: getattr(config, k)
+            for k in ('RECORDINGS_RETENTION_MODE', 'RECORDINGS_MAX_BYTES', 'SAVE_RECORDINGS')
+        }
+        try:
+            fresh = importlib.reload(config)
+            self.assertEqual(fresh.RECORDINGS_RETENTION_MODE, 'size')
+            self.assertEqual(fresh.RECORDINGS_MAX_BYTES, 2 * 1024 * 1024 * 1024)
+            self.assertIn(fresh.RECORDINGS_RETENTION_MODE, fresh.VALID_RETENTION_MODES)
+        finally:
+            for k, v in saved.items():
+                setattr(config, k, v)
