@@ -366,3 +366,55 @@ class TapDisabledEventWiringTests(unittest.TestCase):
                 sys.modules['Quartz'] = saved
             else:
                 sys.modules.pop('Quartz', None)
+
+
+class TapOutageNoiseTests(unittest.TestCase):
+    """B6. Our own stop() disables the tap, and macOS answers with the same
+    disabled-notice a real outage produces. It must not be logged as one, and
+    it must not run the resync against a listener being torn down."""
+
+    def _listener(self):
+        from hotkey_fn import FnHotkeyListener
+
+        return FnHotkeyListener(on_start_cb=lambda: None, on_stop_cb=lambda: None)
+
+    def test_a_disable_notice_during_stop_is_ignored(self):
+        from unittest.mock import patch
+
+        import Quartz
+
+        listener = self._listener()
+        listener._stopping = True
+        with patch.object(listener, '_resync_after_tap_outage') as resync, \
+                self.assertNoLogs('say.hotkey_fn', level='WARNING'):
+            returned = listener._event_callback(
+                None, Quartz.kCGEventTapDisabledByUserInput, 'event', None
+            )
+        self.assertEqual(returned, 'event')
+        resync.assert_not_called()
+
+    def test_a_real_outage_still_reconciles(self):
+        from unittest.mock import patch
+
+        import Quartz
+
+        listener = self._listener()
+        with patch.object(listener, '_resync_after_tap_outage') as resync:
+            listener._event_callback(None, Quartz.kCGEventTapDisabledByTimeout, 'event', None)
+        resync.assert_called_once()
+
+    def test_start_lowers_the_switch_interval(self):
+        import sys
+
+        from hotkey_fn import _LOW_LATENCY_SWITCH_S, apply_low_latency_switch_interval
+
+        saved = sys.getswitchinterval()
+        try:
+            sys.setswitchinterval(0.005)
+            self.assertLessEqual(apply_low_latency_switch_interval(), _LOW_LATENCY_SWITCH_S)
+            # Never raises an interval someone already set lower.
+            sys.setswitchinterval(0.0005)
+            self.assertEqual(apply_low_latency_switch_interval(), 0.0005)
+        finally:
+            sys.setswitchinterval(saved)
+

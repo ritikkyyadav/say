@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -41,6 +42,24 @@ _PTT_START_DELAY = 0.08   # Small debounce before starting PTT recording
 # kCGEventFlagMaskSecondaryFn — the Fn/globe modifier bit. Module-level because
 # both the event callback and the post-outage resync need to test it.
 _FN_FLAG = 0x800000
+
+# The interpreter's thread-switch interval while the tap is live. The tap
+# callback shares this process with the decoder, and macOS disables a tap
+# whose callback does not return promptly (kCGEventTapDisabledByTimeout — 8 in
+# the log); the callback itself is microseconds of Python, so what it is
+# waiting on is the interpreter lock. The default interval lets a busy thread
+# keep the lock for 5 ms at a time; 1 ms hands it over five times as often.
+# A mitigation, not the fix — the fix is a helper process that owns the tap
+# and nothing else (see PRODUCTION.md, B6).
+_LOW_LATENCY_SWITCH_S = 0.001
+
+
+def apply_low_latency_switch_interval() -> float:
+    """Lower the GIL switch interval for the tap's benefit. Returns the value now in effect."""
+    current = sys.getswitchinterval()
+    if current > _LOW_LATENCY_SWITCH_S:
+        sys.setswitchinterval(_LOW_LATENCY_SWITCH_S)
+    return sys.getswitchinterval()
 
 
 class FnHotkeyListener:
@@ -79,6 +98,11 @@ class FnHotkeyListener:
         self._recording_active = False
         self._loop_started = threading.Event()
         self._tap_creation_failed = False
+        # Set for the duration of stop(): disabling our own tap makes macOS
+        # deliver a disabled-notice that used to be logged as an outage (56 of
+        # the 64 "Event tap was disabled" warnings in the log were this) and
+        # ran the resync against a listener that is being torn down.
+        self._stopping = False
         # Callbacks run off the tap thread, but in order: a thread per
         # callback let a quick release's `on_stop` overtake its own `on_start`
         # and leave a recording that nothing ever stopped. See callback_pump.
@@ -311,6 +335,10 @@ class FnHotkeyListener:
             Quartz.kCGEventTapDisabledByTimeout,
             Quartz.kCGEventTapDisabledByUserInput,
         ):
+            if self._stopping:
+                # Our own stop() disabled the tap. Not an outage: nothing to
+                # re-enable and nothing to reconcile.
+                return event
             if self._tap is not None:
                 Quartz.CGEventTapEnable(self._tap, True)
                 _log.warning('Event tap was disabled (%s); re-enabled.', event_type)
@@ -449,6 +477,8 @@ class FnHotkeyListener:
 
         self._loop_started.clear()
         self._tap_creation_failed = False
+        self._stopping = False
+        apply_low_latency_switch_interval()
         self._thread = threading.Thread(target=self._run_tap, daemon=True)
         self._thread.start()
 
@@ -471,6 +501,7 @@ class FnHotkeyListener:
         """
         import Quartz
 
+        self._stopping = True
         tap = self._tap
         loop_ref = self._loop_ref
         source = self._run_loop_source
