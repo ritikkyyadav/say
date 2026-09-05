@@ -35,6 +35,7 @@ FIRST_RUN_MARKER = os.path.join(SETTINGS_DIR, 'first_run_complete')
 PERSISTABLE_KEYS = {
     'MODEL',
     'LANGUAGE',
+    'LANGUAGE_FOCUS',
     'INJECT_METHOD',
     'INITIAL_PROMPT',
     'SHOW_NOTIFICATIONS',

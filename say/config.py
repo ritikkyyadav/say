@@ -80,6 +80,13 @@ DEVICE_WATCH_INTERVAL_S = 2.0
 # Set to None for auto-detect (slightly slower, but handles multilingual input).
 LANGUAGE = 'en'
 
+# What the person dictates in — the question the Models page is built around.
+# One of languages.FOCUS_IDS: 'english' (fixed to 'en', the built-in model),
+# 'european', 'south_asian' or 'any' (automatic detection, a Whisper model).
+# Choosing a focus sets LANGUAGE to the focus's default; the two are persisted
+# separately so a specific language can still be pinned inside a focus.
+LANGUAGE_FOCUS = 'english'
+
 # -- Text Injection -------------------------------------------
 # How transcribed text is inserted into the active app.
 #   'auto'           -> Try Accessibility first, fall back to clipboard paste

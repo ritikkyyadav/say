@@ -42,7 +42,7 @@ class ApiTests(unittest.TestCase):
             for k in (
                 'SAVE_RECORDINGS', 'RECORDINGS_RETENTION_MODE',
                 'RECORDINGS_RETENTION_DAYS', 'RECORDINGS_MAX_BYTES',
-                'LANGUAGE',
+                'LANGUAGE', 'LANGUAGE_FOCUS',
             )
         }
         # Hermetic Moonshine cache so model state never reads the dev machine.
@@ -254,6 +254,7 @@ class LanguageApiTests(ApiTests):
         import config
 
         config.LANGUAGE = 'en'
+        config.LANGUAGE_FOCUS = 'any'   # the picker is filtered by focus; 'any' lists every language
         r = self.client.get('/language', headers=self._auth())
         self.assertEqual(r.status_code, 200)
         body = r.json()
@@ -295,4 +296,51 @@ class LanguageApiTests(ApiTests):
         self.assertEqual(r.status_code, 400)
         self.assertEqual(config.LANGUAGE, 'en')
         self.assertNotIn('LANGUAGE', settings.all_settings())
+
+    def test_get_reports_the_focus_and_its_groups(self):
+        import config
+
+        config.LANGUAGE_FOCUS = 'south_asian'
+        body = self.client.get('/language', headers=self._auth()).json()
+        self.assertEqual(body['focus'], 'south_asian')
+        self.assertEqual([g['id'] for g in body['groups']], ['english', 'european', 'south_asian', 'any'])
+        self.assertIn('hi', [o['code'] for o in body['options']])
+        self.assertEqual(body['recommended_model'], 'mlx-community/whisper-large-v3-turbo')
+
+    def test_choosing_a_focus_applies_its_default_language(self):
+        import config
+        import settings
+
+        r = self.client.post('/language', json={'focus': 'south_asian'}, headers=self._auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['focus'], 'south_asian')
+        self.assertTrue(r.json()['auto'])
+        self.assertIsNone(config.LANGUAGE)
+        self.assertEqual(settings.all_settings().get('LANGUAGE_FOCUS'), 'south_asian')
+
+        r = self.client.post('/language', json={'focus': 'english'}, headers=self._auth())
+        self.assertEqual(r.json()['code'], 'en')
+        self.assertEqual(config.LANGUAGE, 'en')
+
+    def test_a_focus_with_a_pinned_language_keeps_the_pin(self):
+        import config
+
+        r = self.client.post(
+            '/language', json={'focus': 'european', 'code': 'de'}, headers=self._auth()
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['focus'], 'european')
+        self.assertEqual(config.LANGUAGE, 'de')
+
+    def test_a_bad_focus_is_refused_and_nothing_written(self):
+        import config
+        import settings
+
+        config.LANGUAGE = 'en'
+        config.LANGUAGE_FOCUS = 'english'
+        r = self.client.post('/language', json={'focus': 'martian', 'code': 'hi'}, headers=self._auth())
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(config.LANGUAGE, 'en')
+        self.assertNotIn('LANGUAGE', settings.all_settings())
+        self.assertNotIn('LANGUAGE_FOCUS', settings.all_settings())
 

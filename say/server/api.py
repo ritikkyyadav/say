@@ -60,9 +60,14 @@ class ProfileRequest(BaseModel):
 
 
 class LanguageRequest(BaseModel):
-    """Body for POST /language. `null` means detect automatically."""
+    """Body for POST /language. `code: null` means detect automatically.
+
+    `focus` is what the person dictates in (see languages.FOCUS_GROUPS).
+    Sending a focus without a code applies the focus's default code.
+    """
 
     code: str | None = None
+    focus: str | None = None
 
 
 class OverlayConfigRequest(BaseModel):
@@ -268,11 +273,15 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
         import model_manager
 
         code = languages.current()
+        focus = languages.current_focus()
         return {
             'code': code,
             'auto': code is None,
             'name': languages.name_for(code),
-            'options': languages.options(),
+            'options': languages.options_for(focus),
+            'focus': focus,
+            'groups': languages.groups(),
+            'recommended_model': languages.recommended_model(focus),
             # Honest about the bundled model: Moonshine is English-only and
             # takes no language argument, so the choice is inert there.
             'applies_to_active_model': languages.applies_to(
@@ -297,11 +306,24 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
         import languages
         import settings as settings_mod
 
+        # Validate everything before writing anything: a bad focus must not
+        # leave a half-applied change behind.
+        sent = body.model_fields_set
         try:
-            code = languages.normalise(body.code)
+            focus = languages.normalise_focus(body.focus) if 'focus' in sent else None
+            code = languages.normalise(body.code) if 'code' in sent else None
         except languages.BadLanguage as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        settings_mod.set_value('LANGUAGE', code)
+
+        if focus is not None:
+            settings_mod.set_value('LANGUAGE_FOCUS', focus)
+            if 'code' not in sent:
+                # A new focus without an explicit language takes the focus's
+                # default: English is fixed, everything else detects.
+                code = languages.default_code_for(focus)
+                settings_mod.set_value('LANGUAGE', code)
+        if 'code' in sent:
+            settings_mod.set_value('LANGUAGE', code)
         return _language_payload()
 
     @app.get('/transcripts')

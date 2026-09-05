@@ -99,11 +99,27 @@ export type UserProfile = {
 
 export type LanguageOption = { code: string; name: string };
 
+/** What a person dictates in. Fixes the picker to a short list, decides the
+ *  default (English pinned; everything else detects automatically) and names
+ *  the one model worth having for it. */
+export type LanguageGroup = {
+  id: string;
+  name: string;
+  blurb: string;
+  default_code: string | null;
+  recommended_model: string;
+  options: LanguageOption[];
+};
+
 export type LanguageConfig = {
   code: string | null;
   auto: boolean;
   name: string;
+  /** The picker list for the current focus. */
   options: LanguageOption[];
+  focus: string;
+  groups: LanguageGroup[];
+  recommended_model: string;
   /** False when the active model ignores the setting (the bundled model is
    *  English-only), so the UI can say so instead of implying a choice. */
   applies_to_active_model: boolean;
@@ -422,8 +438,11 @@ export const api = {
 
   // ── Language ──────────────────────────────────────────────────────────
   language: () => getJSON<LanguageConfig>('/language'),
-  setLanguage: (code: string | null) =>
-    sendJSON<LanguageConfig>('POST', '/language', { code }),
+  // A focus without a code applies the focus's default; `code: null` pins
+  // automatic detection. Undefined keys are dropped by JSON.stringify, which
+  // is what lets the engine tell "not sent" from "sent as null".
+  setLanguage: (patch: { code?: string | null; focus?: string }) =>
+    sendJSON<LanguageConfig>('POST', '/language', patch),
 
   // ── Overlay appearance ────────────────────────────────────────────────
   overlay: () => getJSON<OverlayConfig>('/overlay'),

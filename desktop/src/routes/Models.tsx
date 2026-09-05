@@ -1,394 +1,323 @@
-// Models, rebuilt for someone who is not going to look up what 809M means.
-//
-// The old page listed seven cards with `speed 4 / accuracy 4 / 1.62 GB` and
-// left you to work it out. This one asks what you are trying to do, points at
-// one answer, and states the cost in things people actually have: minutes,
-// disk, and how long you wait after letting go of the key. The four smaller
-// models are still there, behind a disclosure, because almost nobody needs
-// them and showing them first is what made this hard.
+// Models, built around the only question a person actually has here: will it
+// understand me? First you say what you dictate in — English only, European
+// languages, Hindi/Urdu and South Asian, or anything — and the page tells you
+// in one sentence whether you already have what that needs. Below that, every
+// model the app can run is listed once, with its status in plain words and one
+// action. Nothing is hidden behind a disclosure and nothing is a meter you
+// have to interpret.
 
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, ModelInfo } from '../lib/api';
+import { api, LanguageConfig, LanguageGroup, ModelInfo } from '../lib/api';
 import { bytes, downloadTime } from '../lib/format';
 import { Reveal } from '../lib/motion';
 
-type Intent = 'fast' | 'accurate' | 'multi';
+const SPEED = ['Slow', 'Steady', 'Quick', 'Fast', 'Instant'];
+const ACCURACY = ['Rough', 'Basic', 'Good', 'Excellent', 'The best'];
 
-const INTENTS: { key: Intent; title: string; blurb: string; icon: JSX.Element }[] = [
-  {
-    key: 'fast',
-    title: 'Answer instantly',
-    blurb: 'Short notes, chat replies, quick commands.',
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M13 2L4.5 13.5H11L10 22l8.5-11.5H12L13 2z" />
-      </svg>
-    ),
-  },
-  {
-    key: 'accurate',
-    title: 'Get every word right',
-    blurb: 'Long thinking out loud, names, technical terms.',
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="12" cy="12" r="8.5" />
-        <circle cx="12" cy="12" r="3.6" />
-      </svg>
-    ),
-  },
-  {
-    key: 'multi',
-    title: "I don't only speak English",
-    blurb: 'Hindi, Spanish, switching mid-sentence.',
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-        <circle cx="12" cy="12" r="9" />
-        <path d="M3 12h18M12 3c2.6 3 2.6 15 0 18M12 3c-2.6 3-2.6 15 0 18" />
-      </svg>
-    ),
-  },
-];
+/** One sentence per model, in the words a person would use. Falls back to
+ *  the catalogue's own description for anything not listed here. */
+const WHAT_FOR: Record<string, string> = {
+  'moonshine/medium-streaming-en':
+    'Built in. English only, and the fastest there is. Your dictionary does not reach it, so names and jargon are a guess.',
+  'mlx-community/whisper-large-v3-turbo':
+    'The one to have for any language: fast, accurate, understands 99 languages, and your dictionary biases it.',
+  'mlx-community/whisper-large-v3-mlx':
+    'The most accurate, and slow — it can take several seconds per sentence on this Mac. For when every word matters more than the wait.',
+  'mlx-community/whisper-medium-mlx':
+    'Older and slower than Turbo with no accuracy gain. Only if Turbo will not fit on your disk.',
+  'mlx-community/whisper-small-mlx':
+    'Small and quick. Fine for short, clear speech; it trips on names and technical words.',
+  'mlx-community/whisper-base-mlx':
+    'Tiny and rough. For very old Macs, or for trying the multilingual path before downloading a real model.',
+  'mlx-community/whisper-tiny-mlx':
+    'The smallest there is. For testing only; do not dictate anything you have to trust into it.',
+};
 
-/** How long you wait after letting go of the key — the only latency number
- *  anyone can feel. Derived from the catalogue's own speed rating so it can
- *  never contradict the meter beside it. */
-function latency(speed: number): string {
-  if (speed >= 5) return 'Text lands the moment you let go of the key.';
-  if (speed >= 4) return 'About half a second behind you.';
-  if (speed >= 3) return 'A second or so behind you.';
-  return 'A second or two behind you.';
+function whatFor(m: ModelInfo): string {
+  return WHAT_FOR[m.id] ?? m.description;
 }
 
-function quality(m: ModelInfo): string {
-  // The bundled Moonshine backend takes no decoder prompt at all, so the
-  // dictionary and custom terms are inert on it (see CLAUDE.md). Its
-  // catalogue accuracy rating cannot express that, and without saying so the
-  // page claims two models are both "excellent" and then asks you to upgrade
-  // between them for no stated reason.
-  if (m.backend === 'moonshine') {
-    return 'Very good with everyday English. Your dictionary and custom terms do not reach it, so names and technical words are more of a guess.';
+function statusOf(m: ModelInfo): { key: 'now' | 'dl' | 'have' | 'none'; label: string } {
+  if (m.active) return { key: 'now', label: 'In use' };
+  if (m.download.state === 'downloading') {
+    const pct = Math.round(m.download.percent);
+    return { key: 'dl', label: pct > 0 ? `Downloading ${pct}%` : 'Starting download' };
   }
-  const base =
-    m.accuracy >= 5
-      ? 'The best transcription that exists offline — rare words, noisy rooms, strong accents.'
-      : m.accuracy >= 4
-        ? 'Handles names, jargon and accents well, and your dictionary biases it.'
-        : m.accuracy >= 3
-          ? 'Good with everyday speech; it will trip on names and technical words.'
-          : 'Rough. Fine for quick notes, not for anything you have to trust.';
-  return m.languages === 'multilingual'
-    ? `${base} Understands 99 languages.`
-    : `${base} English only.`;
+  if (m.downloaded) return { key: 'have', label: m.bundled ? 'Built in' : 'Installed' };
+  return { key: 'none', label: 'Not installed' };
 }
 
-function matches(m: ModelInfo, intent: Intent): boolean {
-  if (intent === 'multi') return m.languages === 'multilingual' && m.accuracy >= 4;
-  if (intent === 'accurate') return m.accuracy >= 4 && !m.bundled;
-  return m.speed >= 5;
+// ── The focus chooser ──────────────────────────────────────────────────────
+
+function FocusStatus({
+  lang,
+  models,
+}: {
+  lang: LanguageConfig;
+  models: ModelInfo[];
+}) {
+  const active = models.find((m) => m.active);
+  const rec = models.find((m) => m.id === lang.recommended_model);
+  const group = lang.groups.find((g) => g.id === lang.focus);
+  if (!group || !rec) return null;
+
+  const activeUnderstands = active
+    ? lang.focus === 'english' || active.languages === 'multilingual'
+    : false;
+
+  let line: string;
+  let tone: 'ok' | 'warn' = 'ok';
+  if (lang.focus === 'english') {
+    line = active?.id === rec.id
+      ? `You are set. ${rec.name} is built in, in use, and the fastest for English.`
+      : `${active?.name ?? 'The model in use'} understands English too, but ${rec.name} is built in and faster. Switch below if you want instant results.`;
+  } else if (activeUnderstands && active) {
+    line = active.id === rec.id
+      ? `You are set. ${active.name} understands these languages and is in use.`
+      : `You are set. ${active.name} understands these languages. ${rec.name} is the faster all-rounder if you want it.`;
+  } else {
+    tone = 'warn';
+    line = rec.downloaded
+      ? `The model in use only understands English. ${rec.name} is installed — press Use below.`
+      : `The model in use only understands English. Download ${rec.name} below (${bytes(rec.download_bytes)}, about ${downloadTime(rec.download_bytes)}), then press Use.`;
+  }
+  return <div className={`focus-line ${tone}`}>{line}</div>;
 }
 
-function Meters({ m }: { m: ModelInfo }) {
-  const rows: [string, string, number][] = [
-    ['Speed', ['Slow', 'Steady', 'Quick', 'Very fast', 'Instant'][m.speed - 1] ?? '—', m.speed],
-    ['Accuracy', ['Rough', 'Basic', 'Good', 'Excellent', 'The best'][m.accuracy - 1] ?? '—', m.accuracy],
-    [
-      'Languages',
-      m.languages === 'multilingual' ? '99' : 'English',
-      m.languages === 'multilingual' ? 5 : 1,
-    ],
-  ];
+function Chooser({
+  lang,
+  models,
+  onFocus,
+  onCode,
+  busy,
+  error,
+}: {
+  lang: LanguageConfig;
+  models: ModelInfo[];
+  onFocus: (id: string) => void;
+  onCode: (code: string | null) => void;
+  busy: boolean;
+  error: string | null;
+}) {
+  const pinned = lang.focus !== 'english';
   return (
-    <div className="meters">
-      {rows.map(([label, value, n]) => (
-        <div className="meter" key={label}>
-          <div className="top">
-            <span>{label}</span>
-            <b>{value}</b>
-          </div>
-          <div className="pips">
-            {Array.from({ length: 5 }, (_, i) => (
-              <i key={i} className={i < n ? 'on' : ''} />
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
+    <Reveal className="chooser">
+      <div className="card-t" style={{ fontSize: 16 }}>
+        What do you dictate in?
+      </div>
+      <div className="card-s">
+        Pick one. It sets the language the engine listens for and tells you which model to have.
+      </div>
+      <div className="chips focus">
+        {lang.groups.map((g: LanguageGroup) => (
+          <button
+            key={g.id}
+            className={lang.focus === g.id ? 'chip on' : 'chip'}
+            onClick={() => onFocus(g.id)}
+            disabled={busy}
+          >
+            <h4>{g.name}</h4>
+            <p>{g.blurb}</p>
+          </button>
+        ))}
+      </div>
+
+      <FocusStatus lang={lang} models={models} />
+
+      <div className="focus-lang">
+        <span>Language</span>
+        <select
+          className="sel"
+          aria-label="Language"
+          value={lang.code ?? 'auto'}
+          disabled={busy || !pinned}
+          onChange={(e) => onCode(e.target.value === 'auto' ? null : e.target.value)}
+        >
+          {pinned ? <option value="auto">Automatic — detect, switch mid-sentence</option> : null}
+          {lang.options.map((o) => (
+            <option key={o.code} value={o.code}>
+              {o.name}
+            </option>
+          ))}
+        </select>
+        <span className="card-s" style={{ marginTop: 0 }}>
+          {pinned
+            ? 'Automatic is right for most people. Pin one language only if detection keeps guessing wrong.'
+            : 'Fixed to English for this choice.'}
+        </span>
+        {error ? <span className="card-s" style={{ color: 'var(--accent-deep)', marginTop: 0 }}>{error}</span> : null}
+      </div>
+    </Reveal>
   );
 }
 
-function Card({ m, match }: { m: ModelInfo; match: boolean }) {
+// ── One model, one row ─────────────────────────────────────────────────────
+
+function ModelRow({ m, recommended }: { m: ModelInfo; recommended: boolean }) {
   const qc = useQueryClient();
   const invalidate = () => qc.invalidateQueries({ queryKey: ['models'] });
-
   const use = useMutation({ mutationFn: () => api.setActiveModel(m.id), onSuccess: invalidate });
   const download = useMutation({ mutationFn: () => api.downloadModel(m.id), onSuccess: invalidate });
   const cancel = useMutation({ mutationFn: () => api.cancelDownload(m.id), onSuccess: invalidate });
   const remove = useMutation({ mutationFn: () => api.deleteModel(m.id), onSuccess: invalidate });
 
   const busy = use.isPending || download.isPending || cancel.isPending || remove.isPending;
-  const downloading = m.download.state === 'downloading';
+  const status = statusOf(m);
   const err =
-    (use.error ?? download.error ?? remove.error) instanceof Error
-      ? (use.error ?? download.error ?? remove.error)!.message
+    (use.error ?? download.error ?? remove.error ?? cancel.error) instanceof Error
+      ? (use.error ?? download.error ?? remove.error ?? cancel.error)!.message
       : m.download.error;
 
   return (
-    <Reveal
-      className={`card lift mcard${m.active ? ' active' : ''}${match && !m.active ? ' match' : ''}`}
-    >
-      <div>
-        <div className="mtop">
+    <div className={`mrow${m.active ? ' now' : ''}${recommended ? ' rec' : ''}`}>
+      <div className="mrow-main">
+        <div className="mrow-top">
+          <span className={`mstat ${status.key}`}>{status.label}</span>
           <h3>{m.name}</h3>
-          {m.active ? <span className="tag now">In use</span> : null}
-          {!m.active && m.downloaded ? <span className="tag rec">On this Mac</span> : null}
-          <span className="tag have">{m.params}</span>
+          {recommended ? <span className="tag rec">Recommended for you</span> : null}
         </div>
-        <p className="mdesc">
-          <b>{latency(m.speed)}</b> {quality(m)}
-        </p>
-        <div className="facts">
-          {m.bundled ? (
-            <div className="fact">
-              <b>Included</b>nothing to download
-            </div>
-          ) : m.downloaded ? (
-            <div className="fact">
-              <b>{bytes(m.size_bytes || m.download_bytes)}</b>already downloaded
-            </div>
-          ) : (
-            <div className="fact">
-              <b>{bytes(m.download_bytes)}</b>
-              {downloadTime(m.download_bytes)} to download
-            </div>
-          )}
-          <div className="fact">
-            <b>{bytes(m.size_bytes || m.download_bytes)}</b>on your disk
-          </div>
-          <div className="fact">
-            <b>{m.languages === 'multilingual' ? '99 languages' : 'English'}</b>
-            {m.languages === 'multilingual' ? 'switch freely' : 'only'}
-          </div>
-        </div>
-      </div>
-
-      <div>
-        <Meters m={m} />
-        <div className="mact">
-          {m.active ? (
-            <button className="btn gho" disabled>
-              In use
-            </button>
-          ) : downloading ? (
-            <>
-              <button className="btn gho" onClick={() => cancel.mutate()} disabled={busy}>
-                Cancel
-              </button>
-              <div className="prog">
-                <i style={{ width: `${Math.round(m.download.percent)}%` }} />
-              </div>
-            </>
-          ) : m.downloaded ? (
-            <button className="btn pri" onClick={() => use.mutate()} disabled={busy}>
-              {use.isPending ? 'Switching…' : 'Use this one'}
-            </button>
-          ) : (
-            <button
-              className={match ? 'btn acc' : 'btn pri'}
-              onClick={() => download.mutate()}
-              disabled={busy}
-            >
-              {download.isPending ? 'Starting…' : `Download ${bytes(m.download_bytes)}`}
-            </button>
-          )}
-
-          {!m.active && m.downloaded && !m.bundled ? (
-            <button
-              className="btn gho"
-              style={{ marginTop: 8 }}
-              onClick={() => remove.mutate()}
-              disabled={busy}
-            >
-              Remove
-            </button>
-          ) : null}
-
-          <div className="note">
-            {err
-              ? err
-              : m.active
-                ? 'What you are using right now.'
-                : m.bundled
-                  ? 'Already installed — this is what Say ships with.'
-                  : match
-                    ? 'The upgrade for what you picked above.'
-                    : ''}
-          </div>
-        </div>
-      </div>
-    </Reveal>
-  );
-}
-
-function LanguageRow() {
-  // The one setting the multilingual promise depends on. `null` is
-  // automatic detection, which is what lets a model switch mid-sentence.
-  const qc = useQueryClient();
-  const lang = useQuery({ queryKey: ['language'], queryFn: api.language });
-  const save = useMutation({
-    mutationFn: (code: string | null) => api.setLanguage(code),
-    onSuccess: (next) => qc.setQueryData(['language'], next),
-  });
-  const cfg = lang.data;
-  return (
-    <Reveal className="strip" style={{ marginTop: 14, gap: 16, flexWrap: 'wrap' }}>
-      <span>Language</span>
-      <span style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <select
-          className="sel"
-          aria-label="Language"
-          value={cfg?.code ?? 'auto'}
-          disabled={!cfg || save.isPending}
-          onChange={(e) => save.mutate(e.target.value === 'auto' ? null : e.target.value)}
-        >
-          <option value="auto">Automatic — detect, switch mid-sentence</option>
-          {(cfg?.options ?? []).map((o) => (
-            <option key={o.code} value={o.code}>
-              {o.name}
-            </option>
-          ))}
-        </select>
-        {cfg && !cfg.applies_to_active_model ? (
-          <span className="card-s">
-            The model in use is English-only and ignores this. It applies to the Whisper models.
+        <p className="mrow-what">{whatFor(m)}</p>
+        <div className="mrow-facts">
+          <span>
+            <b>{m.languages === 'multilingual' ? '99 languages' : 'English only'}</b>
           </span>
+          <span>
+            <b>{bytes(m.size_bytes || m.download_bytes)}</b> {m.downloaded ? 'on disk' : 'to download'}
+          </span>
+          <span>
+            Speed <b>{SPEED[m.speed - 1] ?? '—'}</b>
+          </span>
+          <span>
+            Accuracy <b>{ACCURACY[m.accuracy - 1] ?? '—'}</b>
+          </span>
+        </div>
+        {status.key === 'dl' ? (
+          <div className="prog" style={{ maxWidth: 420 }}>
+            <i style={{ width: `${Math.max(2, Math.round(m.download.percent))}%` }} />
+          </div>
         ) : null}
-        {save.error ? (
-          <span className="card-s">{save.error instanceof Error ? save.error.message : 'Could not save'}</span>
+        {err ? <div className="mrow-err">{err}</div> : null}
+      </div>
+
+      <div className="mrow-act">
+        {m.active ? (
+          <button className="btn gho" disabled>
+            In use
+          </button>
+        ) : status.key === 'dl' ? (
+          <button className="btn gho" onClick={() => cancel.mutate()} disabled={busy}>
+            Cancel
+          </button>
+        ) : m.downloaded ? (
+          <button className={recommended ? 'btn acc' : 'btn pri'} onClick={() => use.mutate()} disabled={busy}>
+            {use.isPending ? 'Switching…' : 'Use'}
+          </button>
+        ) : (
+          <button className={recommended ? 'btn acc' : 'btn pri'} onClick={() => download.mutate()} disabled={busy}>
+            {download.isPending ? 'Starting…' : `Download ${bytes(m.download_bytes)}`}
+          </button>
+        )}
+        {!m.active && m.downloaded && !m.bundled && status.key !== 'dl' ? (
+          <button className="btn gho" onClick={() => remove.mutate()} disabled={busy}>
+            Remove
+          </button>
         ) : null}
-      </span>
-    </Reveal>
+      </div>
+    </div>
   );
 }
+
+// ── The page ───────────────────────────────────────────────────────────────
 
 export function Models() {
-  const [intent, setIntent] = useState<Intent>('fast');
-  const { data, isLoading, error } = useQuery({
+  const qc = useQueryClient();
+  const models = useQuery({
     queryKey: ['models'],
     queryFn: api.models,
     refetchInterval: (q) =>
       q.state.data?.models.some((m) => m.download.state === 'downloading') ? 800 : false,
   });
+  const lang = useQuery({ queryKey: ['language'], queryFn: api.language });
+  const setLang = useMutation({
+    mutationFn: (patch: { code?: string | null; focus?: string }) => api.setLanguage(patch),
+    onSuccess: (next) => qc.setQueryData(['language'], next),
+  });
 
-  const [primary, rest] = useMemo(() => {
-    const models = [...(data?.models ?? [])].sort((a, b) => a.order - b.order);
-    // Lead with what you are using, the best all-round upgrade, and the most
-    // accurate. Everything else is a compromise for old hardware.
-    const lead = models.filter(
-      (m) => m.active || m.bundled || m.recommended || m.accuracy >= 5 || (m.accuracy >= 4 && m.speed >= 4),
+  const rows = useMemo(() => {
+    const all = [...(models.data?.models ?? [])];
+    // In use first, then what is on this Mac, then what is not — and inside
+    // each group the catalogue's own order (best daily driver first).
+    const rank = (m: ModelInfo) => (m.active ? 0 : m.downloaded ? 1 : 2);
+    return all.sort((a, b) => rank(a) - rank(b) || a.order - b.order);
+  }, [models.data]);
+
+  if (models.isError || lang.isError) {
+    return (
+      <div className="page">
+        <header className="hero">
+          <h1>Models</h1>
+        </header>
+        <div className="card err">
+          <h3>Can&rsquo;t reach the dictation engine</h3>
+          <p>Make sure Say is running, then try again.</p>
+        </div>
+      </div>
     );
-    const ids = new Set(lead.map((m) => m.id));
-    return [lead, models.filter((m) => !ids.has(m.id))];
-  }, [data]);
+  }
 
-  const suggestion = useMemo(() => {
-    const candidates = primary.filter((m) => matches(m, intent));
-    // Cheapest thing that satisfies the intent — never upsell past it.
-    return candidates.sort((a, b) => a.download_bytes - b.download_bytes)[0] ?? null;
-  }, [primary, intent]);
-
-  const [showRest, setShowRest] = useState(false);
-
-  const answer = (() => {
-    if (!suggestion) return 'Loading what you have installed…';
-    if (suggestion.active) {
-      return `**Stay where you are.** ${suggestion.name} is already what you are using, and it is the right pick for that. Nothing to download, nothing to decide.`;
-    }
-    if (suggestion.downloaded) {
-      return `**Switch to ${suggestion.name}.** It is already on this Mac — switching takes effect immediately, no relaunch.`;
-    }
-    return `**Download ${suggestion.name}.** It costs ${bytes(suggestion.download_bytes)} and ${downloadTime(suggestion.download_bytes)}, and in exchange ${
-      intent === 'multi'
-        ? 'it understands 99 languages. Set Language below to Automatic to switch between them mid-sentence.'
-        : 'it stops guessing at names, jargon and unusual words.'
-    }`;
-  })();
+  const recommended = lang.data?.recommended_model;
+  const langError = setLang.error instanceof Error ? setLang.error.message : null;
 
   return (
     <div className="page">
       <header className="hero">
-        <h1>Pick how Say listens.</h1>
+        <h1>Will it understand you?</h1>
         <p>
-          The only real trade is <b>how fast it answers</b> against <b>how well it hears you</b> —
-          and how much disk it takes. Switching is instant, and you can change your mind whenever.
+          Say what you dictate in, and the page tells you whether you already have the right
+          model. Every model the app can run is listed below with its status in plain words.
+          Switching is instant and never needs a relaunch.
         </p>
       </header>
 
-      <Reveal className="chooser">
-        <div className="card-t" style={{ fontSize: 16 }}>
-          What matters most to you right now?
-        </div>
-        <div className="card-s">Pick one and we&rsquo;ll point at the right model.</div>
-        <div className="chips">
-          {INTENTS.map((it) => (
-            <button
-              key={it.key}
-              className={intent === it.key ? 'chip on' : 'chip'}
-              onClick={() => setIntent(it.key)}
-            >
-              <span className="ic">{it.icon}</span>
-              <h4>{it.title}</h4>
-              <p>{it.blurb}</p>
-            </button>
-          ))}
-        </div>
-        <div className="answer">
-          <span className="b">→</span>
+      {lang.data && models.data ? (
+        <Chooser
+          lang={lang.data}
+          models={models.data.models}
+          onFocus={(id) => setLang.mutate({ focus: id })}
+          onCode={(code) => setLang.mutate({ code })}
+          busy={setLang.isPending}
+          error={langError}
+        />
+      ) : (
+        <div className="card-s">Loading…</div>
+      )}
+
+      <section className="sec">
+        <Reveal className="sec-h">
+          <h2>Every model, and where it stands</h2>
           <p>
-            {answer.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
-              part.startsWith('**') ? <b key={i}>{part.slice(2, -2)}</b> : <span key={i}>{part}</span>,
-            )}
+            <b>In use</b> is what transcribes right now. <b>Installed</b> is on this Mac and one
+            click away. <b>Not installed</b> has to be downloaded first.
           </p>
-        </div>
-      </Reveal>
-
-      <LanguageRow />
-
-      <div className="sec">
-        {isLoading ? (
+        </Reveal>
+        {models.isLoading ? (
           <div className="card-s">Loading models…</div>
-        ) : error ? (
-          <div className="card err">
-            <h3>Can&rsquo;t reach the dictation engine</h3>
-            <p>Make sure Say is running, then try again.</p>
-          </div>
         ) : (
-          <>
-            {primary.map((m) => (
-              <Card key={m.id} m={m} match={suggestion?.id === m.id} />
+          <div className="mlist">
+            {rows.map((m) => (
+              <ModelRow key={m.id} m={m} recommended={m.id === recommended} />
             ))}
-
-            {rest.length > 0 ? (
-              <>
-                <button className="more" onClick={() => setShowRest((v) => !v)}>
-                  {showRest
-                    ? 'Hide the smaller models'
-                    : `Show ${rest.length} more — smaller models for tight disks and older Macs`}
-                </button>
-                {showRest
-                  ? rest.map((m) => <Card key={m.id} m={m} match={false} />)
-                  : null}
-              </>
-            ) : null}
-          </>
+          </div>
         )}
-      </div>
+      </section>
 
-      {data ? (
+      {models.data ? (
         <Reveal className="strip" style={{ marginTop: 16 }}>
           <span>Stored on disk</span>
           <span>
-            <b>{bytes(data.cache_bytes)}</b> — removing one frees its space immediately
+            <b>{bytes(models.data.cache_bytes)}</b> across the installed models — removing one frees its
+            space immediately
           </span>
         </Reveal>
       ) : null}
