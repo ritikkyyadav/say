@@ -41,6 +41,44 @@ class FakeTranscriber:
         return self.text
 
 
+class CanStartRecordingTests(unittest.TestCase):
+    """`can_start_recording()` is the rule the hotkey wiring consults before it
+    shows the glyph and opens the mic. It has to agree with `start_recording`
+    exactly, or the mark goes up for a recording the engine then refuses."""
+
+    def _controller(self, state):
+        controller = DictationController(
+            recorder=FakeRecorder([0] * config.SAMPLE_RATE),
+            transcriber=FakeTranscriber(),
+            injector=lambda _: InjectionResult(True, 'clipboard'),
+            logger=None,
+        )
+        controller.state = state
+        return controller
+
+    def test_startable_states(self):
+        for state in (DictationState.IDLE, DictationState.READY, DictationState.ERROR):
+            self.assertTrue(self._controller(state).can_start_recording(), state)
+
+    def test_busy_states(self):
+        for state in (
+            DictationState.LOADING, DictationState.RECORDING, DictationState.PROCESSING,
+        ):
+            self.assertFalse(self._controller(state).can_start_recording(), state)
+
+    def test_a_live_recording_blocks_regardless_of_state(self):
+        controller = self._controller(DictationState.READY)
+        controller._recording = True
+        self.assertFalse(controller.can_start_recording())
+
+    def test_the_predicate_agrees_with_start_recording(self):
+        for state in DictationState:
+            controller = self._controller(state)
+            expected = controller.can_start_recording()
+            with patch('controller.notify_error'):
+                self.assertEqual(controller.start_recording(), expected, state)
+
+
 class ControllerTests(unittest.TestCase):
     def setUp(self):
         # Point the transcript store at a per-test temp directory so the

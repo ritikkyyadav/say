@@ -95,6 +95,20 @@ DISMISS_OMEGA = 34.0
 OPACITY_LEAD = 1.6
 HIDE_BELOW = 0.02
 
+# ── Self-healing ────────────────────────────────────────────────
+# AppKit-vended display links suspend themselves the moment their window is not
+# on a display — measured here: a panel moved off every screen, or ordered out,
+# receives exactly zero frames until it is back. That is the right behaviour
+# for a clock, and a trap for a lifecycle that *waits for frames* to finish
+# hiding. If the glyph is mid-fade when its display goes away (lid closed, an
+# external monitor unplugged, a Space the panel cannot follow), `_finish_hide`
+# never runs: `_visible` stays True, the dead link stays registered, and every
+# later `_show` skips repositioning and ordering front because it believes the
+# mark is already up — the overlay is then gone until the engine restarts.
+# A display link ticks every ~16 ms while healthy, so a visible glyph that has
+# not been drawn for this long is not on any display, whatever its flags say.
+CLOCK_STALE_S = 1.0
+
 # ── Palette ─────────────────────────────────────────────────────
 # The ink follows the system appearance, but the system appearance is a poor
 # proxy for what is actually *behind* the glyph: people run macOS dark and read
@@ -553,6 +567,8 @@ class DictationOverlay:
             self._build()
             if self._panel is None:
                 return
+        if self._clock_is_stale():
+            self._recover_stale_clock('show')
         self._motion_state = motion_state
         if fresh:
             # A new gesture, whatever the last one did. Clearing this
@@ -583,9 +599,47 @@ class DictationOverlay:
     def _hide(self) -> None:
         if self._panel is None or not self._visible:
             return
+        if self._clock_is_stale():
+            # No frames are coming, so the fade would wait forever and leave
+            # the glyph flagged visible. Retract outright instead.
+            self._recover_stale_clock('hide')
+            return
         self._reveal.omega = DISMISS_OMEGA
         self._reveal.target = 0.0
         self._start_clock()
+
+    def _clock_is_stale(self) -> bool:
+        """True when the glyph thinks it is on screen but nothing has drawn it."""
+        if not self._visible or (self._link is None and self._timer is None):
+            return False
+        return (time.perf_counter() - self._last_frame_at) > CLOCK_STALE_S
+
+    def _recover_stale_clock(self, why: str) -> None:
+        """Forget a glyph whose display went away, so the next show starts clean.
+
+        Deliberately leaves `_recording` alone: a caller mid-`listen()` has
+        just set it, and clearing it here would let a stale disarm hide a live
+        recording's mark.
+        """
+        _log.warning(
+            'Overlay frame clock stalled for %.1fs during %s — the glyph left its '
+            'display; rebuilding it on the active screen',
+            time.perf_counter() - self._last_frame_at, why,
+        )
+        self._stop_clock()
+        self._visible = False
+        self._reveal.snap(0.0)
+        self._motion.reset()
+        if self._shape is not None:
+            try:
+                self._apply(self._motion.heights, 0.0)
+            except Exception:
+                _log.debug('Could not blank the stalled glyph', exc_info=True)
+        if self._panel is not None:
+            try:
+                self._panel.orderOut_(None)
+            except Exception:
+                _log.debug('Could not order out the stalled glyph', exc_info=True)
 
     def _mark_recording(self, value: bool) -> None:
         self._recording = value
@@ -736,11 +790,16 @@ class DictationOverlay:
             if self._reveal.target <= 0.0 and reveal <= HIDE_BELOW:
                 self._finish_hide()
         except Exception:
-            _log.exception('Overlay frame failed; stopping the clock')
+            # A frozen mark left on screen is worse than none: retract it, so
+            # the next gesture starts from a clean, hidden state.
+            _log.exception('Overlay frame failed; retracting the glyph')
             try:
-                self._stop_clock()
+                self._finish_hide()
             except Exception:
-                pass
+                try:
+                    self._stop_clock()
+                except Exception:
+                    pass
 
     def _paint_columns(self, heights) -> None:
         """Recolour the columns for this frame.

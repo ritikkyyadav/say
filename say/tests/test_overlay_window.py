@@ -284,3 +284,80 @@ def test_a_corrupt_custom_theme_falls_back_rather_than_raising(glyph):
 
     assert glyph._themed is False
     assert glyph._shape.isHidden() is False
+
+
+# ── Self-healing frame clock ─────────────────────────────────────────────────
+# AppKit-vended display links suspend the moment their window leaves every
+# display (measured: zero frames off-screen or ordered out, resuming on return).
+# A glyph caught mid-fade by that stays flagged visible forever, and every later
+# show is skipped because the overlay believes the mark is already up. These
+# pin the recovery: a visible glyph whose clock has gone quiet is rebuilt.
+
+
+def _show_listening(glyph):
+    from waveform import BarMotion
+
+    glyph._show(BarMotion.LISTEN, True)
+
+
+def test_a_glyph_whose_clock_stalled_is_rebuilt_on_the_next_show(glyph):
+    import time
+
+    _show_listening(glyph)
+    assert glyph._visible is True
+    first = glyph._link
+    assert first is not None
+
+    # No frame for longer than the stale threshold: the display went away.
+    glyph._last_frame_at = time.perf_counter() - (overlay_mod.CLOCK_STALE_S + 1.0)
+    _show_listening(glyph)
+
+    assert glyph._visible is True
+    assert glyph._link is not None and glyph._link is not first
+    assert glyph._panel.isVisible() is True
+
+
+def test_hiding_a_stalled_glyph_finishes_immediately(glyph):
+    """A fade needs frames; with none coming, waiting would never end."""
+    import time
+
+    _show_listening(glyph)
+    glyph._last_frame_at = time.perf_counter() - (overlay_mod.CLOCK_STALE_S + 1.0)
+
+    glyph._hide()
+
+    assert glyph._visible is False
+    assert glyph._link is None and glyph._timer is None
+    assert glyph._panel.isVisible() is False
+
+
+def test_a_live_clock_is_left_alone(glyph):
+    """The guard must never fire on a healthy glyph: rebuilding one that is
+    animating would reset its motion mid-dictation."""
+    import time
+
+    _show_listening(glyph)
+    first = glyph._link
+    glyph._last_frame_at = time.perf_counter()
+
+    _show_listening(glyph)
+
+    assert glyph._link is first
+    assert glyph._visible is True
+
+
+def test_recovery_keeps_the_recording_flag(glyph):
+    """`listen()` sets `_recording` just before it shows; clearing it during a
+    recovery would let a stale disarm hide a live recording's mark."""
+    import time
+
+    _show_listening(glyph)
+    glyph._mark_recording(True)
+    glyph._last_frame_at = time.perf_counter() - (overlay_mod.CLOCK_STALE_S + 1.0)
+
+    from waveform import BarMotion
+
+    glyph._show(BarMotion.LISTEN, False)
+
+    assert glyph._recording is True
+    assert glyph._visible is True

@@ -22,6 +22,7 @@ from audio import AudioRecorder
 from controller import DictationController, DictationEvent, DictationState
 from device_watcher import DeviceWatcher
 from first_run import run_wizard as run_first_run_wizard
+from gestures import GestureBridge
 from listener_factory import ListenerUpgrader, make_listener, try_start_fn_listener
 from logging_setup import LOG_DIR, configure_logging, get_logger, install_crash_handler
 from menubar_icon import IconState
@@ -79,6 +80,15 @@ class SayApp(rumps.App):
             transcriber=Transcriber(),
             status_callback=self._handle_status,
             logger=print,
+        )
+        # One place decides what a key press does to the mic and the glyph
+        # (see gestures.py). Both are late-bound: the overlay does not exist
+        # until the model has loaded, the listener until make_listener returns.
+        self._bridge = GestureBridge(
+            self.controller,
+            self.recorder,
+            overlay=lambda: self.overlay,
+            listener=lambda: self.listener,
         )
         # Let the model manager swap the live transcriber when the user picks
         # a different model from Settings or the desktop UI — no relaunch.
@@ -211,11 +221,11 @@ class SayApp(rumps.App):
 
         try:
             info = make_listener(
-                on_start=self._on_recording_start,
-                on_stop=self._on_recording_stop,
-                on_cancel=self._on_recording_cancel,
-                on_arm=self._on_arm,
-                on_disarm=self._on_disarm,
+                on_start=self._bridge.on_start,
+                on_stop=self._bridge.on_stop,
+                on_cancel=self._bridge.on_cancel,
+                on_arm=self._bridge.on_arm,
+                on_disarm=self._bridge.on_disarm,
                 prefer_legacy=prefer_legacy,
             )
         except RuntimeError as exc:
@@ -278,11 +288,11 @@ class SayApp(rumps.App):
 
         def build():
             return try_start_fn_listener(
-                on_start=self._on_recording_start,
-                on_stop=self._on_recording_stop,
-                on_cancel=self._on_recording_cancel,
-                on_arm=self._on_arm,
-                on_disarm=self._on_disarm,
+                on_start=self._bridge.on_start,
+                on_stop=self._bridge.on_stop,
+                on_cancel=self._bridge.on_cancel,
+                on_arm=self._bridge.on_arm,
+                on_disarm=self._bridge.on_disarm,
             )
 
         self._upgrader = ListenerUpgrader(
@@ -317,36 +327,6 @@ class SayApp(rumps.App):
                 _log.exception('Fn-key override failed after upgrade')
         notify('Say', f'Accessibility granted — {info.label} is now active.')
 
-    def _on_arm(self) -> None:
-        """Trigger key down. The glyph goes up before the mic does.
-
-        `recorder.arm()` can block for seconds re-opening a device CoreAudio is
-        still releasing, and the overlay's whole promise is that it is already
-        on screen by then.
-        """
-        if self.overlay is not None:
-            self.overlay.arm()
-        self.recorder.arm()
-
-    def _on_disarm(self) -> None:
-        """The gesture turned out to be an ordinary shortcut — take it back."""
-        if self.overlay is not None:
-            self.overlay.release_arm()
-        self.recorder.disarm()
-
-    def _on_recording_start(self) -> None:
-        """Called when hotkey triggers recording start."""
-        mode = self.listener.mode if self.listener else 'ptt'
-        self.controller.start_recording(mode=mode)
-
-    def _on_recording_stop(self) -> None:
-        """Called when hotkey triggers recording stop."""
-        self.controller.stop_recording()
-
-    def _on_recording_cancel(self) -> None:
-        """Called when recording is cancelled (Esc)."""
-        self.controller.cancel_recording()
-
     def _handle_status(self, event: DictationEvent) -> None:
         """Update the menu-bar icon and title from state changes."""
         self.status_item.title = f'Status: {event.message}'
@@ -354,26 +334,19 @@ class SayApp(rumps.App):
         if event.state == DictationState.RECORDING:
             self.title = TITLE_RECORDING
             self._apply_status_icon(IconState.RECORDING)
-            if self.overlay is not None:
-                self.overlay.listen(event.mode or 'ptt')
-
         elif event.state == DictationState.PROCESSING:
             self.title = TITLE_PROCESSING
             self._apply_status_icon(IconState.PROCESSING)
-            if self.overlay is not None:
-                self.overlay.process()
-
         elif event.state == DictationState.ERROR:
             self.title = TITLE_ERROR
             self._apply_status_icon(IconState.ERROR)
-            if self.overlay is not None:
-                self.overlay.dismiss()
-
         else:
             self.title = TITLE_IDLE
             self._apply_status_icon(IconState.IDLE)
-            if self.overlay is not None:
-                self.overlay.dismiss()
+
+        # The glyph follows the same event, through the same routing the
+        # sidecar uses, so the two entry points cannot disagree about it.
+        self._bridge.on_status(event)
 
     # ── Menu-bar icon application ────────────────────────────────
 
@@ -631,35 +604,6 @@ def _run_server_only(owner_pid: int | None = None) -> None:
     # refer to it, and `_setup_sidecar_ui` fills it in once the loop is up.
     overlay_slot: list = [None]
 
-    _overlay_warned: set = set()
-
-    def overlay_do(action: str, *args) -> None:
-        overlay = overlay_slot[0]
-        if overlay is None:
-            return
-        try:
-            getattr(overlay, action)(*args)
-        except Exception:
-            # Warning, not debug. The overlay is the only feedback the user
-            # gets that dictation is live, and it fails *silently* by design
-            # so a broken glyph can never stop a recording. That combination
-            # means a dead overlay leaves no trace at the engine's INFO level
-            # — which is how a real one (the window sitting at the wrong level)
-            # went unnoticed. Once per action, so a persistent fault says so
-            # without filling the log on every dictation.
-            if action not in _overlay_warned:
-                _overlay_warned.add(action)
-                _log.warning('Overlay %s failed; the glyph will not appear',
-                             action, exc_info=True)
-
-    def on_status(event: DictationEvent) -> None:
-        if event.state == DictationState.RECORDING:
-            overlay_do('listen', event.mode or 'ptt')
-        elif event.state == DictationState.PROCESSING:
-            overlay_do('process')
-        else:
-            overlay_do('dismiss')
-
     # Armed here, before anything slow. The model load alone takes seconds and
     # the hotkey tap is registered right after it, so a quit during boot must be
     # noticed *now* — otherwise the engine finishes arming itself for an app
@@ -704,9 +648,19 @@ def _run_server_only(owner_pid: int | None = None) -> None:
     controller = DictationController(
         recorder=recorder,
         transcriber=Transcriber(),
-        status_callback=on_status,
         logger=print,
     )
+    # Everything a key press does to the mic and the glyph lives in one place
+    # (gestures.py), so a refused recording can never leave the mark up and the
+    # microphone open — the failure that read as "the overlay disappears".
+    listener_info = None
+    bridge = GestureBridge(
+        controller,
+        recorder,
+        overlay=lambda: overlay_slot[0],
+        listener=lambda: listener_info.listener if listener_info is not None else None,
+    )
+    controller.status_callback = bridge.on_status
     # Bind the live engine so /models/active swaps the model without a relaunch.
     model_manager.get_manager().register_engine(controller)
 
@@ -759,29 +713,15 @@ def _run_server_only(owner_pid: int | None = None) -> None:
 
     from server.api import set_listener_state
 
-    def on_arm() -> None:
-        # Overlay first: `recorder.arm()` can block for seconds while CoreAudio
-        # finishes releasing the device, and the glyph's whole promise is that
-        # it is already on screen by the time the key finishes travelling.
-        overlay_do('arm')
-        recorder.arm()
-
-    def on_disarm() -> None:
-        overlay_do('release_arm')
-        recorder.disarm()
-
-    listener_info = None
     fn_error: str | None = None
     try:
         _log.info('Starting hotkey listener (sidecar mode)…')
         listener_info = make_listener(
-            on_start=lambda: controller.start_recording(
-                mode=(listener_info.listener.mode if listener_info else 'ptt')
-            ),
-            on_stop=controller.stop_recording,
-            on_cancel=controller.cancel_recording,
-            on_arm=on_arm,
-            on_disarm=on_disarm,
+            on_start=bridge.on_start,
+            on_stop=bridge.on_stop,
+            on_cancel=bridge.on_cancel,
+            on_arm=bridge.on_arm,
+            on_disarm=bridge.on_disarm,
             prefer_legacy=bool(getattr(config, 'PREFER_LEGACY_HOTKEY', False)),
         )
         if listener_info is not None:
@@ -844,13 +784,11 @@ def _run_server_only(owner_pid: int | None = None) -> None:
     ):
         def _build_fn_listener():
             return try_start_fn_listener(
-                on_start=lambda: controller.start_recording(
-                    mode=(listener_info.listener.mode if listener_info else 'ptt')
-                ),
-                on_stop=controller.stop_recording,
-                on_cancel=controller.cancel_recording,
-                on_arm=on_arm,
-                on_disarm=on_disarm,
+                on_start=bridge.on_start,
+                on_stop=bridge.on_stop,
+                on_cancel=bridge.on_cancel,
+                on_arm=bridge.on_arm,
+                on_disarm=bridge.on_disarm,
             )
 
         def _adopt_fn_listener(info) -> None:
@@ -904,7 +842,7 @@ def _run_server_only(owner_pid: int | None = None) -> None:
         if _shutdown_done.is_set():
             return
         _shutdown_done.set()
-        overlay_do('close')
+        bridge.overlay_do('close')
         if watchdog is not None:
             watchdog.stop()
         if upgrader is not None:

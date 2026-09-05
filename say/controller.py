@@ -193,6 +193,28 @@ class DictationController:
             notify_error(message)
             return False
 
+    def _can_start_locked(self) -> bool:
+        """The one rule for whether a recording may begin. Caller holds the lock."""
+        return not self._recording and self.state not in {
+            DictationState.LOADING,
+            DictationState.RECORDING,
+            DictationState.PROCESSING,
+        }
+
+    def can_start_recording(self) -> bool:
+        """Would `start_recording()` accept a recording right now?
+
+        Exposed so the hotkey wiring can ask *before* it shows the glyph and
+        opens the microphone on key-down. Without this the mark went up and
+        followed the user's voice during PROCESSING, only to be torn down by
+        the busy job's completion event mid-sentence — and the refused start
+        never closed the mic it had armed. The answer is advisory (the state
+        can change between the check and the call), which is why
+        `start_recording` re-checks under the lock rather than trusting it.
+        """
+        with self._lock:
+            return self._can_start_locked()
+
     def start_recording(self, mode: str = 'ptt') -> bool:
         """Start recording if the app is ready for push-to-talk.
 
@@ -202,11 +224,7 @@ class DictationController:
         _log.info('start_recording called (mode=%s, current_state=%s)', mode, self.state)
         error_for_notify: str | None = None
         with self._lock:
-            if self._recording or self.state in {
-                DictationState.LOADING,
-                DictationState.RECORDING,
-                DictationState.PROCESSING,
-            }:
+            if not self._can_start_locked():
                 _log.info('start_recording rejected — already in %s', self.state)
                 return False
             self._recording = True
