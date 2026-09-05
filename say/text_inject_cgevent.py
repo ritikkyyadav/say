@@ -13,10 +13,18 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-# Empirically-safe chunk size for CGEventKeyboardSetUnicodeString.
-# Posting more than ~20 UTF-16 code units in a single event is
-# unreliable across apps (some clip the tail). Chunking is essentially
+# Empirically-safe chunk size for CGEventKeyboardSetUnicodeString, in UTF-16
+# code units — the unit the API counts in. Posting more than ~20 in a single
+# event is unreliable across apps (some clip the tail). Chunking is essentially
 # free, so we stay conservative.
+#
+# Units, not characters. Python indexes strings by code point, and a code
+# point outside the Basic Multilingual Plane (every emoji, some CJK) is TWO
+# UTF-16 units. The first version sliced `text[i:i+20]` and passed `len(chunk)`
+# as the length, so a chunk holding N such characters was 20+N units long and
+# the API was told 20: its last N units were dropped, and a pair could be torn
+# in half. Verified by round trip — "hello world 😀 test!" came back without
+# its "!", and five emoji in a row produced an undecodable half-surrogate.
 _CHUNK_LEN = 20
 
 # Inter-chunk delay so receiving apps can process events. Browsers and
@@ -36,6 +44,37 @@ INJECTED_EVENT_MARKER = 0x5A5900
 class InjectResult:
     success: bool
     error: str | None = None
+
+
+def _utf16_units(ch: str) -> int:
+    return 2 if ord(ch) >= 0x10000 else 1
+
+
+def utf16_len(text: str) -> int:
+    """Length of `text` in UTF-16 code units — what Quartz counts."""
+    return sum(_utf16_units(ch) for ch in text)
+
+
+def chunks(text: str, limit: int = _CHUNK_LEN) -> list[str]:
+    """Split `text` into pieces of at most `limit` UTF-16 units.
+
+    A character is never split: a surrogate pair either fits in the current
+    chunk or starts the next one, so every chunk is a valid string on its own
+    and the length handed to Quartz is exactly the chunk's unit count.
+    """
+    out: list[str] = []
+    current: list[str] = []
+    units = 0
+    for ch in text:
+        n = _utf16_units(ch)
+        if current and units + n > limit:
+            out.append(''.join(current))
+            current, units = [], 0
+        current.append(ch)
+        units += n
+    if current:
+        out.append(''.join(current))
+    return out
 
 
 def _mark(Quartz, event) -> None:
@@ -71,21 +110,20 @@ def inject_text_cgevent(text: str) -> InjectResult:
     except Exception as exc:
         return InjectResult(False, f'Quartz unavailable: {exc}')
 
-    chunks = [text[i:i + _CHUNK_LEN] for i in range(0, len(text), _CHUNK_LEN)]
-
     try:
-        for chunk in chunks:
+        for chunk in chunks(text):
+            units = utf16_len(chunk)
             evt_down = Quartz.CGEventCreateKeyboardEvent(None, 0, True)
             if evt_down is None:
                 return InjectResult(False, 'CGEventCreateKeyboardEvent returned None')
-            Quartz.CGEventKeyboardSetUnicodeString(evt_down, len(chunk), chunk)
+            Quartz.CGEventKeyboardSetUnicodeString(evt_down, units, chunk)
             _mark(Quartz, evt_down)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, evt_down)
 
             evt_up = Quartz.CGEventCreateKeyboardEvent(None, 0, False)
             if evt_up is None:
                 return InjectResult(False, 'CGEventCreateKeyboardEvent returned None')
-            Quartz.CGEventKeyboardSetUnicodeString(evt_up, len(chunk), chunk)
+            Quartz.CGEventKeyboardSetUnicodeString(evt_up, units, chunk)
             _mark(Quartz, evt_up)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, evt_up)
 
