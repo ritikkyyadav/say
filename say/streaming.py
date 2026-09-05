@@ -213,9 +213,21 @@ class SegmentedSession:
     that chain (and contend for the same model anyway).
     """
 
-    def __init__(self, transcriber, base_prompt: str = '', short_prompt: str | None = None):
+    def __init__(
+        self,
+        transcriber,
+        base_prompt: str = '',
+        short_prompt: str | None = None,
+        on_progress=None,
+    ):
         self._transcriber = transcriber
         self._base_prompt = base_prompt
+        # `on_progress(done, total)` after every decode and every push, so the
+        # wait can be shown as "3 of 7" instead of a spinner. Never raises
+        # into the session.
+        self._on_progress = on_progress
+        self.completed = 0
+        self.queued = 0
         # What a piece shorter than SHORT_SEGMENT_SECONDS is decoded with.
         # Defaults to the base prompt for callers that predate the guard.
         self._short_prompt = base_prompt if short_prompt is None else short_prompt
@@ -255,6 +267,8 @@ class SegmentedSession:
                 self.complete = False
                 _log.exception('Segment transcription failed; marking result incomplete')
             finally:
+                if item is not None:
+                    self._advance()
                 self._queue.task_done()
 
     def _transcribe(self, segment) -> str:
@@ -272,7 +286,28 @@ class SegmentedSession:
     def push(self, segment) -> None:
         """Queue a closed segment. Returns immediately."""
         if not self._cancelled.is_set():
+            with self._lock:
+                self.queued += 1
             self._queue.put(segment)
+            self._report()
+
+    def _advance(self) -> None:
+        with self._lock:
+            self.completed += 1
+        self._report()
+
+    def _report(self) -> None:
+        callback = self._on_progress
+        if callback is None:
+            return
+        try:
+            callback(self.completed, self.queued)
+        except Exception:
+            _log.debug('Progress callback raised', exc_info=True)
+
+    @property
+    def progress(self) -> tuple[int, int]:
+        return (self.completed, self.queued)
 
     def finish(self, tail, timeout: float = 180.0) -> str:
         """Decode the tail, wait for earlier segments, and join everything.
@@ -296,11 +331,16 @@ class SegmentedSession:
 
         tail_text = ''
         if tail is not None and len(tail):
+            with self._lock:
+                self.queued += 1
+            self._report()
             try:
                 tail_text = self._transcribe(tail)
             except Exception:
                 self.complete = False
                 _log.exception('Tail transcription failed')
+            finally:
+                self._advance()
         with self._lock:
             parts = list(self._parts)
         if tail_text:

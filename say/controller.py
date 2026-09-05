@@ -42,6 +42,9 @@ class DictationEvent:
     preview: str | None = None
     error: str | None = None
     mode: str | None = None   # 'ptt' or 'hands_free'
+    # (decoded, queued) segments while PROCESSING, so a long wait can be
+    # shown as "3 of 7" rather than an unexplained spinner. None otherwise.
+    progress: tuple[int, int] | None = None
 
 
 StatusCallback = Callable[[DictationEvent], None]
@@ -179,10 +182,11 @@ class DictationController:
         preview: str | None = None,
         error: str | None = None,
         mode: str | None = None,
+        progress: tuple[int, int] | None = None,
     ) -> None:
         with self._lock:
             self.state = state
-        event = DictationEvent(state, message, preview, error, mode)
+        event = DictationEvent(state, message, preview, error, mode, progress)
         if self.logger is not None:
             self.logger(f'[{state.value}] {message}')
         if self.status_callback is not None:
@@ -195,9 +199,25 @@ class DictationController:
                 'message': message,
                 'mode': mode,
                 'error': error,
+                'progress': (
+                    {'done': int(progress[0]), 'total': int(progress[1])}
+                    if progress is not None else None
+                ),
             })
         except Exception:
             pass
+
+    def _on_stream_progress(self, done: int, total: int) -> None:
+        """A segment finished decoding. Only worth announcing once the user is
+        waiting — while they are still talking there is nothing to wait for."""
+        with self._lock:
+            waiting = self.state == DictationState.PROCESSING
+        if waiting:
+            self._emit(
+                DictationState.PROCESSING,
+                f'Transcribing… {done} of {total}',
+                progress=(done, total),
+            )
 
     def load_model(self) -> bool:
         """Load the transcription model before accepting hotkeys."""
@@ -332,7 +352,12 @@ class DictationController:
             notify_error(message)
             return False
 
-        self._emit(DictationState.PROCESSING, f'Transcribing {duration:.1f}s locally...')
+        session = self._session
+        self._emit(
+            DictationState.PROCESSING,
+            f'Transcribing {duration:.1f}s locally...',
+            progress=getattr(session, 'progress', None) if session is not None else None,
+        )
         t0 = time.time()
         try:
             text = self._transcribe(audio)
@@ -566,6 +591,7 @@ class DictationController:
                 # Terms only, for a tail too short to carry a style seed — the
                 # same rule whole-clip mode applies (see streaming.SHORT_SEGMENT_SECONDS).
                 short_prompt=postprocess.asr_prompt(include_style_seed=False),
+                on_progress=self._on_stream_progress,
             )
             self.recorder.set_segment_callback(session.push)
             self._session = session

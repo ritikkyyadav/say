@@ -110,6 +110,43 @@ class FocusGuardTests(unittest.TestCase):
         self.assertEqual(focus_policy(None, None), 'inject')
 
 
+class ProgressEventTests(unittest.TestCase):
+    """B8: while the user waits, PROCESSING events carry (done, total)."""
+
+    def test_progress_reaches_the_event_and_the_bus_only_while_processing(self):
+        events = []
+        controller = DictationController(
+            recorder=FakeRecorder([0] * config.SAMPLE_RATE),
+            transcriber=FakeTranscriber(),
+            injector=lambda _: InjectionResult(True, 'clipboard'),
+            status_callback=events.append,
+            logger=None,
+        )
+        controller.state = DictationState.RECORDING
+        controller._on_stream_progress(1, 3)
+        self.assertEqual(events, [])           # still talking: nothing to wait for
+
+        controller.state = DictationState.PROCESSING
+        with patch('controller.get_bus') as bus:
+            controller._on_stream_progress(2, 3)
+        self.assertEqual(events[-1].state, DictationState.PROCESSING)
+        self.assertEqual(events[-1].progress, (2, 3))
+        payload = bus.return_value.publish_threadsafe.call_args.args[0]
+        self.assertEqual(payload['progress'], {'done': 2, 'total': 3})
+
+    def test_events_without_progress_carry_none(self):
+        payloads = []
+        controller = DictationController(
+            recorder=FakeRecorder([0] * config.SAMPLE_RATE),
+            transcriber=FakeTranscriber(),
+            logger=None,
+        )
+        with patch('controller.get_bus') as bus:
+            bus.return_value.publish_threadsafe.side_effect = payloads.append
+            controller._emit(DictationState.READY, 'ready')
+        self.assertIsNone(payloads[0]['progress'])
+
+
 class CanStartRecordingTests(unittest.TestCase):
     """`can_start_recording()` is the rule the hotkey wiring consults before it
     shows the glyph and opens the mic. It has to agree with `start_recording`
@@ -419,7 +456,7 @@ class StreamingTranscriptionTests(unittest.TestCase):
         captured = {}
 
         class Session:
-            def __init__(self, transcriber, base_prompt='', short_prompt=None):
+            def __init__(self, transcriber, base_prompt='', short_prompt=None, **_kwargs):
                 captured['base'] = base_prompt
                 captured['short'] = short_prompt
 

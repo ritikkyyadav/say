@@ -109,6 +109,28 @@ def _normalize_for_filter(text: str) -> str:
     return text.lower().strip().strip(_FILTER_STRIP).strip()
 
 
+# A decode slower than real time is the tell for a throttled or swapping
+# machine — 35 to 44 s for 8 to 15 s of audio on 2026-09-05 — and nothing used
+# to say so. Warn on any clip at least this long whose real-time factor
+# exceeds SLOW_RTF, so the log names the cause of a long wait.
+SLOW_RTF = 1.0
+_SLOW_MIN_AUDIO_SECONDS = 1.0
+
+
+def note_realtime(audio_seconds: float, elapsed: float, backend: str) -> float:
+    """Log the decode timing; warn when it fell below real time. Returns the RTF."""
+    rtf = elapsed / audio_seconds if audio_seconds > 0 else 0.0
+    if audio_seconds >= _SLOW_MIN_AUDIO_SECONDS and rtf > SLOW_RTF:
+        _log.warning(
+            'Decoding fell below real time: %.1fs of audio took %.1fs (RTF %.2f, %s) — '
+            'the machine is throttled or under memory pressure',
+            audio_seconds, elapsed, rtf, backend,
+        )
+    else:
+        _log.info('%.1fs audio -> %.1fs inference (%s)', audio_seconds, elapsed, backend)
+    return rtf
+
+
 # Below this much audio, the style seed is dropped from the decoder prompt.
 # Two sentences of text prior against a fraction of a second of sound is a
 # contest the audio loses: the decoder follows the prompt and loops. Long
@@ -423,10 +445,7 @@ class Transcriber:
 
         result = self._mlx_whisper.transcribe(audio, **kwargs)
         text = result.get('text', '').strip()
-        _log.info(
-            '%.1fs audio -> %.1fs inference',
-            len(audio) / config.SAMPLE_RATE, time.time() - t0,
-        )
+        note_realtime(len(audio) / config.SAMPLE_RATE, time.time() - t0, 'whisper')
         return text
 
     def _transcribe_moonshine(self, audio) -> str:
@@ -438,8 +457,5 @@ class Transcriber:
         tx = self._ms.transcribe_without_streaming(data, sample_rate=config.SAMPLE_RATE)
         lines = getattr(tx, 'lines', None) or []
         text = ' '.join(getattr(ln, 'text', '') for ln in lines).strip()
-        _log.info(
-            '%.1fs audio -> %.1fs inference (moonshine)',
-            len(audio) / config.SAMPLE_RATE, time.time() - t0,
-        )
+        note_realtime(len(audio) / config.SAMPLE_RATE, time.time() - t0, 'moonshine')
         return text

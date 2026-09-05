@@ -7,7 +7,7 @@
 
 import { useState } from 'react';
 import { NavItem, useNavigate } from '../lib/router';
-import { useEngineState } from '../lib/useEngineState';
+import { useEngineEvent } from '../lib/useEngineState';
 import { Mark } from './Mark';
 
 function OverlayIcon() {
@@ -29,9 +29,13 @@ function ModelsIcon() {
 
 export function Rail() {
   const navigate = useNavigate();
-  const state = useEngineState();
-  const recording = state === 'recording';
+  const event = useEngineEvent();
+  const recording = event.state === 'recording';
   const [poke, setPoke] = useState(0);
+  // The mark carries no label by design; a long wait is the one thing worth
+  // a tooltip, and the engine now says how far along it is.
+  const progress = event.state === 'processing' && event.progress ? event.progress : null;
+  const label = progress ? `Transcribing ${progress.done} of ${progress.total}` : 'Home';
 
   return (
     <aside className="rail">
@@ -42,8 +46,8 @@ export function Rail() {
           navigate('/');
         }}
         onMouseEnter={() => setPoke((n) => n + 1)}
-        title="Home"
-        aria-label="Home"
+        title={label}
+        aria-label={label}
       >
         <Mark live={recording} burst={poke} />
       </button>

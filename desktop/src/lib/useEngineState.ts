@@ -1,14 +1,21 @@
 import { useEffect, useState } from 'react';
-import { DictationStateName, subscribeEvents } from './api';
+import { DictationStateEvent, DictationStateName, subscribeEvents } from './api';
 
-export function useEngineState(): DictationStateName {
-  const [state, setState] = useState<DictationStateName>('idle');
+const IDLE: DictationStateEvent = { state: 'idle' };
+
+/** The whole latest engine event: state plus, while processing, progress. */
+export function useEngineEvent(): DictationStateEvent {
+  const [event, setEvent] = useState<DictationStateEvent>(IDLE);
   useEffect(() => {
     const cleanup = subscribeEvents(
-      (e) => setState(e.state ?? 'idle'),
-      () => setState('idle'),
+      (e) => setEvent(e.state ? e : IDLE),
+      () => setEvent(IDLE),
     );
     return cleanup;
   }, []);
-  return state;
+  return event;
+}
+
+export function useEngineState(): DictationStateName {
+  return useEngineEvent().state ?? 'idle';
 }

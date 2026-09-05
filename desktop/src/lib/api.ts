@@ -27,6 +27,9 @@ export type DictationStateEvent = {
   message?: string;
   mode?: 'ptt' | 'hands_free' | null;
   error?: string | null;
+  /** Segments decoded so far while processing, so a long wait reads as
+   *  "3 of 7" instead of an unexplained spinner. */
+  progress?: { done: number; total: number } | null;
 };
 
 export type Transcript = {

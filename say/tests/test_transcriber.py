@@ -157,3 +157,29 @@ class WhisperDecodeOptionsTests(unittest.TestCase):
         prompt = self._capture_kwargs(seconds=0.6).get('initial_prompt', '')
         self.assertNotIn('full stops', prompt)
         self.assertIn('Claude Code', prompt)
+
+
+class RealtimeWarningTests(unittest.TestCase):
+    """B8: a decode slower than real time is logged as a warning, by name."""
+
+    def test_slow_decode_warns(self):
+        import transcriber
+
+        with self.assertLogs('say.transcriber', level='WARNING') as logs:
+            rtf = transcriber.note_realtime(8.0, 35.7, 'whisper')
+        self.assertGreater(rtf, transcriber.SLOW_RTF)
+        self.assertTrue(any('below real time' in line for line in logs.output))
+
+    def test_a_fast_decode_is_only_info(self):
+        import transcriber
+
+        with self.assertLogs('say.transcriber', level='INFO') as logs:
+            transcriber.note_realtime(10.0, 1.4, 'whisper')
+        self.assertFalse(any('WARNING' in line for line in logs.output))
+
+    def test_tiny_clips_never_warn(self):
+        import transcriber
+
+        with self.assertLogs('say.transcriber', level='INFO') as logs:
+            transcriber.note_realtime(0.4, 19.2, 'whisper')
+        self.assertFalse(any('WARNING' in line for line in logs.output))

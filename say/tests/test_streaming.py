@@ -280,3 +280,33 @@ class ShortPieceTests(unittest.TestCase):
 
         self.assertEqual(streaming.SHORT_SEGMENT_SECONDS, transcriber._STYLE_SEED_MIN_SECONDS)
 
+
+class ProgressTests(unittest.TestCase):
+    """B8: the session reports (done, total) so the wait can be shown."""
+
+    class _Slowish:
+        def transcribe(self, audio, prompt_override=None):
+            return 'x'
+
+    def test_progress_is_reported_per_decode_and_ends_complete(self):
+        seen = []
+        session = streaming.SegmentedSession(self._Slowish(), on_progress=lambda d, t: seen.append((d, t)))
+        session.push(speech(9))
+        session.push(speech(9))
+        session.finish(speech(3))
+        self.assertEqual(seen[-1], (3, 3))
+        self.assertEqual(session.progress, (3, 3))
+        # done never exceeds total, and both only ever grow.
+        for (d, t), (d2, t2) in zip(seen, seen[1:], strict=False):
+            self.assertLessEqual(d, t)
+            self.assertLessEqual(d, d2)
+            self.assertLessEqual(t, t2)
+
+    def test_a_raising_callback_never_breaks_the_session(self):
+        def boom(_d, _t):
+            raise RuntimeError('ui went away')
+
+        session = streaming.SegmentedSession(self._Slowish(), on_progress=boom)
+        session.push(speech(9))
+        self.assertEqual(session.finish(speech(3)), 'x x')
+        self.assertTrue(session.complete)
