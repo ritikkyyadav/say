@@ -342,6 +342,50 @@ class StreamingTranscriptionTests(unittest.TestCase):
         text = c._transcribe([0] * config.SAMPLE_RATE)
         self.assertEqual(text, 'hello world')
 
+    def test_a_silent_clip_is_not_decoded_twice(self):
+        """B10. Every decode ran and every one heard nothing: the clip is
+        silent, and decoding it again only doubles the wait (22 times in
+        the log) for the same empty answer."""
+        recorder = FakeRecorder([0] * config.SAMPLE_RATE)
+        transcriber = FakeTranscriber()
+
+        class SilentSession:
+            segment_count = 0
+            complete = True
+            attempted = 2
+            def finish(self, tail):
+                return ''
+            def cancel(self):
+                pass
+
+        c = self._controller(recorder, transcriber)
+        c._session = SilentSession()
+        recorder.set_segment_callback = lambda _cb: None
+        recorder.pop_tail = lambda: []
+        self.assertEqual(c._transcribe([0] * config.SAMPLE_RATE), '')
+        self.assertFalse(transcriber.transcribed)
+
+    def test_an_incomplete_empty_session_still_re_decodes(self):
+        """A failed segment may have swallowed real words: re-decode."""
+        recorder = FakeRecorder([0] * config.SAMPLE_RATE)
+        transcriber = FakeTranscriber()
+
+        class BrokenSession:
+            segment_count = 0
+            complete = False
+            attempted = 2
+            def finish(self, tail):
+                return ''
+            def cancel(self):
+                pass
+
+        c = self._controller(recorder, transcriber)
+        c._session = BrokenSession()
+        recorder.set_segment_callback = lambda _cb: None
+        recorder.pop_tail = lambda: []
+        self.assertEqual(c._transcribe([0] * config.SAMPLE_RATE), 'hello world')
+        self.assertTrue(transcriber.transcribed)
+
     def test_short_clip_tears_down_the_streaming_session(self):
         """A discarded tap must not leak a worker thread + segment callback."""
         recorder = FakeRecorder([0] * 10)          # far below MIN_AUDIO_SECONDS

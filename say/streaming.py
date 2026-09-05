@@ -201,6 +201,13 @@ class SegmentedSession:
         # up. The caller MUST check this: returning a partial transcript is
         # worse than being slow, because the user silently loses words.
         self.complete = True
+        # Decoder calls this session made (segments + tail), counted whether
+        # or not they succeeded. The controller uses it to tell "decoded and
+        # heard nothing" from "never decoded": an empty result from a complete
+        # session that attempted at least one decode is a silent clip, and
+        # re-decoding the whole buffer — which the log shows happened 22 times
+        # — only doubled the wait for a recording that contained nothing.
+        self.attempted = 0
         self._queue: queue.Queue = queue.Queue()
         self._parts: list[str] = []
         self._lock = threading.Lock()
@@ -231,6 +238,7 @@ class SegmentedSession:
     def _transcribe(self, segment) -> str:
         with self._lock:
             previous = ' '.join(self._parts)
+            self.attempted += 1
         prompt = carry_over_prompt(self._base_prompt, previous)
         return self._transcriber.transcribe(segment, prompt_override=prompt) or ''
 

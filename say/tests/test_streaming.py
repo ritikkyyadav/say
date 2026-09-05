@@ -205,3 +205,36 @@ class CompletenessTests(unittest.TestCase):
         s.push(speech(1))
         s.finish(speech(1), timeout=0.01)
         self.assertFalse(s.complete)
+
+
+class AttemptCountTests(unittest.TestCase):
+    """`attempted` is what lets the controller tell silence from failure."""
+
+    class _Quiet:
+        def transcribe(self, audio, prompt_override=None):
+            return ''
+
+    def test_segments_and_tail_are_counted(self):
+        session = streaming.SegmentedSession(self._Quiet(), base_prompt='')
+        session.push(speech(9))
+        session.push(speech(9))
+        self.assertEqual(session.finish(speech(1)), '')
+        self.assertEqual(session.attempted, 3)
+        self.assertTrue(session.complete)
+
+    def test_no_tail_counts_only_the_segments(self):
+        session = streaming.SegmentedSession(self._Quiet(), base_prompt='')
+        session.push(speech(9))
+        session.finish(None)
+        self.assertEqual(session.attempted, 1)
+
+    def test_a_failing_decode_is_still_an_attempt(self):
+        class Boom:
+            def transcribe(self, audio, prompt_override=None):
+                raise RuntimeError('decoder fell over')
+
+        session = streaming.SegmentedSession(Boom(), base_prompt='')
+        session.push(speech(9))
+        session.finish(None)
+        self.assertEqual(session.attempted, 1)
+        self.assertFalse(session.complete)

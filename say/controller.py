@@ -533,17 +533,25 @@ class DictationController:
             session.cancel()
             return self.transcriber.transcribe(audio)
         text = session.finish(tail)
-        if text and getattr(session, 'complete', True):
+        complete = getattr(session, 'complete', True)
+        if text and complete:
             _log.info('Streaming: joined %d background segment(s) + tail',
                       session.segment_count)
             return text
-        # Either nothing came back, or a segment failed / timed out and the
-        # result is missing words. Re-decode the whole clip: being slow is
+        attempted = int(getattr(session, 'attempted', 0) or 0)
+        if not text and complete and attempted > 0:
+            # Every decode ran and every one heard nothing: a silent clip.
+            # Decoding the whole buffer again would only double the wait for
+            # the same empty answer (22 such re-decodes in the log).
+            _log.info('Streaming: %d decode(s) found no speech; not re-decoding', attempted)
+            return ''
+        # A segment failed / timed out and the result is missing words, or
+        # nothing was ever decoded. Re-decode the whole clip: being slow is
         # always better than silently handing the user a truncated dictation.
         _log.warning(
-            'Streaming result unusable (text=%s complete=%s); '
+            'Streaming result unusable (text=%s complete=%s attempted=%d); '
             're-decoding the whole clip',
-            bool(text), getattr(session, 'complete', True),
+            bool(text), complete, attempted,
         )
         return self.transcriber.transcribe(audio)
 
