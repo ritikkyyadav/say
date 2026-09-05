@@ -39,18 +39,63 @@ class InjectResult:
     error: str | None = None
 
 
+def snapshot_pasteboard(pb) -> list[dict[str, object]] | None:
+    """Every item on the pasteboard with every type it carries.
+
+    The first version saved only the plain-text type, so a clipboard holding
+    an image, a file or rich text was replaced by the transcript and never
+    restored. Returns None when the pasteboard cannot be read, in which case
+    the caller falls back to the string-only path.
+    """
+    try:
+        items = pb.pasteboardItems() or []
+        out: list[dict[str, object]] = []
+        for item in items:
+            entry: dict[str, object] = {}
+            for kind in item.types() or []:
+                data = item.dataForType_(kind)
+                if data is not None:
+                    entry[str(kind)] = data
+            if entry:
+                out.append(entry)
+        return out
+    except Exception:
+        return None
+
+
+def restore_pasteboard(pb, snapshot, AppKit) -> bool:
+    """Put a `snapshot_pasteboard()` result back. Best-effort."""
+    try:
+        pb.clearContents()
+        objects = []
+        for entry in snapshot:
+            item = AppKit.NSPasteboardItem.alloc().init()
+            for kind, data in entry.items():
+                item.setData_forType_(data, kind)
+            objects.append(item)
+        if not objects:
+            return True
+        return bool(pb.writeObjects_(objects))
+    except Exception:
+        return False
+
+
 def inject_text_clipboard(text: str) -> InjectResult:
     """Paste `text` via NSPasteboard + Cmd+V, then restore previous content."""
     if not text:
         return InjectResult(False, 'no text')
 
     try:
+        import AppKit
         import Quartz
         from AppKit import NSPasteboard, NSPasteboardTypeString
     except Exception as exc:
         return InjectResult(False, f'AppKit/Quartz unavailable: {exc}')
 
     pb = NSPasteboard.generalPasteboard()
+    # Everything that is on the clipboard, not just its text: an image or a
+    # file the user copied a moment ago must survive the paste.
+    snapshot = snapshot_pasteboard(pb)
     prev = pb.stringForType_(NSPasteboardTypeString)
 
     pb.clearContents()
@@ -77,7 +122,9 @@ def inject_text_clipboard(text: str) -> InjectResult:
 
     time.sleep(_POST_PASTE_SETTLE_S)
 
-    if prev is not None:
+    restored = bool(snapshot) and restore_pasteboard(pb, snapshot, AppKit)
+    if not restored and prev is not None:
+        # The string-only path: what the snapshot could not do, or all there was.
         try:
             pb.clearContents()
             pb.setString_forType_(prev, NSPasteboardTypeString)

@@ -159,3 +159,101 @@ class ClipboardInjectorTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ClipboardRestoreTests(unittest.TestCase):
+    """B9: the fallback must give back whatever was on the clipboard, not
+    only its text."""
+
+    def _quartz(self):
+        fake_quartz = MagicMock()
+        fake_quartz.CGEventCreateKeyboardEvent.return_value = MagicMock()
+        fake_quartz.kCGEventFlagMaskCommand = 0x100000
+        fake_quartz.kCGHIDEventTap = 'tap'
+        return fake_quartz
+
+    def _item(self, payload):
+        item = MagicMock()
+        item.types.return_value = list(payload)
+        item.dataForType_.side_effect = lambda kind: payload.get(kind)
+        return item
+
+    def test_every_item_and_type_is_restored(self):
+        from text_inject_clipboard import inject_text_clipboard
+
+        fake_pb = MagicMock()
+        fake_pb.pasteboardItems.return_value = [
+            self._item({'public.png': b'png-bytes', 'public.utf8-plain-text': b'alt'}),
+            self._item({'public.file-url': b'file:///x'}),
+        ]
+        fake_pb.stringForType_.return_value = None
+        fake_pb.setString_forType_.return_value = True
+        fake_pb.writeObjects_.return_value = True
+
+        made = []
+
+        def make_item():
+            item = MagicMock()
+            made.append(item)
+            return item
+
+        fake_appkit = MagicMock()
+        fake_appkit.NSPasteboard.generalPasteboard.return_value = fake_pb
+        fake_appkit.NSPasteboardTypeString = 'public.utf8-plain-text'
+        fake_appkit.NSPasteboardItem.alloc.return_value.init.side_effect = make_item
+
+        with patch.dict(sys.modules, {'AppKit': fake_appkit, 'Quartz': self._quartz()}), \
+                patch('text_inject_clipboard._POST_PASTE_SETTLE_S', 0.0), \
+                patch('text_inject_clipboard._PRE_PASTE_SETTLE_S', 0.0):
+            result = inject_text_clipboard('hello')
+
+        self.assertTrue(result.success)
+        fake_pb.writeObjects_.assert_called_once()
+        restored = fake_pb.writeObjects_.call_args.args[0]
+        self.assertEqual(len(restored), 2)
+        self.assertEqual(len(made), 2)
+        self.assertEqual(sum(m.setData_forType_.call_count for m in made), 3)
+        made[0].setData_forType_.assert_any_call(b'png-bytes', 'public.png')
+
+    def test_an_unreadable_pasteboard_falls_back_to_the_string_path(self):
+        from text_inject_clipboard import inject_text_clipboard
+
+        fake_pb = MagicMock()
+        fake_pb.pasteboardItems.side_effect = RuntimeError('no pasteboard')
+        fake_pb.stringForType_.return_value = 'previous'
+        fake_pb.setString_forType_.return_value = True
+
+        fake_appkit = MagicMock()
+        fake_appkit.NSPasteboard.generalPasteboard.return_value = fake_pb
+        fake_appkit.NSPasteboardTypeString = 'public.utf8-plain-text'
+
+        with patch.dict(sys.modules, {'AppKit': fake_appkit, 'Quartz': self._quartz()}), \
+                patch('text_inject_clipboard._POST_PASTE_SETTLE_S', 0.0), \
+                patch('text_inject_clipboard._PRE_PASTE_SETTLE_S', 0.0):
+            result = inject_text_clipboard('hello')
+
+        self.assertTrue(result.success)
+        fake_pb.writeObjects_.assert_not_called()
+        # Once to write the transcript, once to put 'previous' back.
+        self.assertEqual(fake_pb.setString_forType_.call_count, 2)
+
+    def test_a_failed_restore_does_not_fail_the_paste(self):
+        from text_inject_clipboard import inject_text_clipboard
+
+        fake_pb = MagicMock()
+        fake_pb.pasteboardItems.return_value = [self._item({'public.png': b'x'})]
+        fake_pb.stringForType_.return_value = None
+        fake_pb.setString_forType_.return_value = True
+        fake_pb.writeObjects_.side_effect = RuntimeError('restore exploded')
+
+        fake_appkit = MagicMock()
+        fake_appkit.NSPasteboard.generalPasteboard.return_value = fake_pb
+        fake_appkit.NSPasteboardTypeString = 'public.utf8-plain-text'
+
+        with patch.dict(sys.modules, {'AppKit': fake_appkit, 'Quartz': self._quartz()}), \
+                patch('text_inject_clipboard._POST_PASTE_SETTLE_S', 0.0), \
+                patch('text_inject_clipboard._PRE_PASTE_SETTLE_S', 0.0):
+            result = inject_text_clipboard('hello')
+
+        self.assertTrue(result.success)
+
