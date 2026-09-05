@@ -342,6 +342,39 @@ class StreamingTranscriptionTests(unittest.TestCase):
         text = c._transcribe([0] * config.SAMPLE_RATE)
         self.assertEqual(text, 'hello world')
 
+    def test_the_session_gets_both_prompts(self):
+        """B3: the tail-safe prompt must reach the session, or the guard is inert."""
+        import postprocess
+        import streaming
+
+        captured = {}
+
+        class Session:
+            def __init__(self, transcriber, base_prompt='', short_prompt=None):
+                captured['base'] = base_prompt
+                captured['short'] = short_prompt
+
+            def push(self, segment):
+                pass
+
+            def cancel(self):
+                pass
+
+        recorder = FakeRecorder([0] * config.SAMPLE_RATE)
+        recorder.set_segment_callback = lambda _cb: None
+        c = self._controller(recorder, FakeTranscriber())
+        saved = config.STYLE_SEED_ENABLED
+        config.STYLE_SEED_ENABLED = True
+        try:
+            with patch.object(streaming, 'SegmentedSession', Session):
+                c._begin_streaming()
+        finally:
+            config.STYLE_SEED_ENABLED = saved
+            c._end_streaming(cancel=True)
+
+        self.assertIn(postprocess.STYLE_SEED, captured['base'])
+        self.assertNotIn(postprocess.STYLE_SEED, captured['short'] or '')
+
     def test_a_silent_clip_is_not_decoded_twice(self):
         """B10. Every decode ran and every one heard nothing: the clip is
         silent, and decoding it again only doubles the wait (22 times in

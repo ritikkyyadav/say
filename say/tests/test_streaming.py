@@ -136,7 +136,9 @@ class SegmentedSessionTests(unittest.TestCase):
         t = _FakeTranscriber(['First part.', 'Second part.'])
         s = streaming.SegmentedSession(t, base_prompt='SEED')
         s.push(speech(1))
-        s.finish(speech(1))
+        # A tail long enough to carry context; anything under
+        # SHORT_SEGMENT_SECONDS is deliberately decoded without it (B3).
+        s.finish(speech(3))
         self.assertEqual(t.prompts[0], 'SEED')
         self.assertIn('First part.', t.prompts[1])
 
@@ -238,3 +240,43 @@ class AttemptCountTests(unittest.TestCase):
         session.finish(None)
         self.assertEqual(session.attempted, 1)
         self.assertFalse(session.complete)
+
+
+class ShortPieceTests(unittest.TestCase):
+    """B3: a piece shorter than SHORT_SEGMENT_SECONDS gets the short prompt
+    (terms only) and no carry-over — the guard whole-clip mode already had."""
+
+    class _Recorder:
+        def __init__(self):
+            self.prompts: list[str] = []
+
+        def transcribe(self, audio, prompt_override=None):
+            self.prompts.append(prompt_override)
+            return 'words'
+
+    def test_a_short_tail_gets_the_short_prompt_and_no_carry_over(self):
+        rec = self._Recorder()
+        session = streaming.SegmentedSession(rec, base_prompt='SEED', short_prompt='TERMS')
+        session.push(speech(9))
+        session.finish(speech(0.5))
+        self.assertEqual(rec.prompts[0], 'SEED')
+        self.assertEqual(rec.prompts[1], 'TERMS')
+
+    def test_a_long_tail_still_carries_the_previous_text(self):
+        rec = self._Recorder()
+        session = streaming.SegmentedSession(rec, base_prompt='SEED', short_prompt='TERMS')
+        session.push(speech(9))
+        session.finish(speech(3))
+        self.assertEqual(rec.prompts[1], 'SEED words')
+
+    def test_the_short_prompt_defaults_to_the_base_prompt(self):
+        rec = self._Recorder()
+        session = streaming.SegmentedSession(rec, base_prompt='SEED')
+        session.finish(speech(0.5))
+        self.assertEqual(rec.prompts, ['SEED'])
+
+    def test_the_threshold_matches_the_whole_clip_guard(self):
+        import transcriber
+
+        self.assertEqual(streaming.SHORT_SEGMENT_SECONDS, transcriber._STYLE_SEED_MIN_SECONDS)
+

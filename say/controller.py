@@ -493,7 +493,11 @@ class DictationController:
             import streaming
 
             session = streaming.SegmentedSession(
-                self.transcriber, base_prompt=postprocess.asr_prompt()
+                self.transcriber,
+                base_prompt=postprocess.asr_prompt(),
+                # Terms only, for a tail too short to carry a style seed — the
+                # same rule whole-clip mode applies (see streaming.SHORT_SEGMENT_SECONDS).
+                short_prompt=postprocess.asr_prompt(include_style_seed=False),
             )
             self.recorder.set_segment_callback(session.push)
             self._session = session

@@ -52,6 +52,25 @@ SILENCE_RMS = 0.004
 # Whisper's prompt window is limited, and the tail is what sets the style.
 CARRY_OVER_CHARS = 200
 
+# Below this length a piece is decoded with the *short* prompt: the user's
+# terms only, no style seed and no carry-over text. Whole-clip mode already
+# drops the seed under `transcriber._STYLE_SEED_MIN_SECONDS` because a strong
+# text prior against a fraction of a second of audio makes the decoder follow
+# the prompt instead of the sound and loop; streaming used to bypass that
+# guard and hand every tail the seed plus 200 characters of carry-over. On
+# 2026-09-05 a 0.4 s tail took 19.2 s to decode and came back as one word
+# repeated 663 times. Only the tail can ever be this short — mid segments are
+# at least SEGMENT_MIN_SECONDS — so no piece carrying real sentence context is
+# affected.
+SHORT_SEGMENT_SECONDS = 2.0
+
+
+def _seconds(audio) -> float:
+    try:
+        return len(audio) / float(config.SAMPLE_RATE)
+    except Exception:
+        return 0.0
+
 
 def _rms(block: np.ndarray) -> float:
     if block.size == 0:
@@ -194,9 +213,12 @@ class SegmentedSession:
     that chain (and contend for the same model anyway).
     """
 
-    def __init__(self, transcriber, base_prompt: str = ''):
+    def __init__(self, transcriber, base_prompt: str = '', short_prompt: str | None = None):
         self._transcriber = transcriber
         self._base_prompt = base_prompt
+        # What a piece shorter than SHORT_SEGMENT_SECONDS is decoded with.
+        # Defaults to the base prompt for callers that predate the guard.
+        self._short_prompt = base_prompt if short_prompt is None else short_prompt
         # False if any segment failed or was still pending when finish() gave
         # up. The caller MUST check this: returning a partial transcript is
         # worse than being slow, because the user silently loses words.
@@ -239,7 +261,10 @@ class SegmentedSession:
         with self._lock:
             previous = ' '.join(self._parts)
             self.attempted += 1
-        prompt = carry_over_prompt(self._base_prompt, previous)
+        if _seconds(segment) < SHORT_SEGMENT_SECONDS:
+            prompt = self._short_prompt
+        else:
+            prompt = carry_over_prompt(self._base_prompt, previous)
         return self._transcriber.transcribe(segment, prompt_override=prompt) or ''
 
     # ── public API ───────────────────────────────────────────────
