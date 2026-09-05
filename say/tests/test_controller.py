@@ -41,6 +41,75 @@ class FakeTranscriber:
         return self.text
 
 
+class FocusGuardTests(unittest.TestCase):
+    """B2. The keystrokes go wherever focus is when transcription ends, which
+    with a slow model is seconds after the key was released. A dictation
+    meant for one window must never be typed into another."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.store = store_module.reset_store_for_tests(os.path.join(self._tmp.name, 't.db'))
+
+    def tearDown(self):
+        store_module.reset_store_for_tests(os.path.join(self._tmp.name, 't.db'))
+        self._tmp.cleanup()
+
+    def _run(self, focus_sequence):
+        injected = []
+        controller = DictationController(
+            recorder=FakeRecorder([0] * config.SAMPLE_RATE),
+            transcriber=FakeTranscriber(),
+            injector=lambda text: (injected.append(text), InjectionResult(True, 'accessibility'))[1],
+            status_callback=(events := []).append,
+            logger=None,
+        )
+        with patch('controller.get_frontmost_app', side_effect=focus_sequence), \
+                patch('controller.notify_transcription_complete'), \
+                patch('controller.notify_error') as notified, \
+                patch.object(DictationController, '_copy_to_clipboard', return_value=True) as copied:
+            controller.load_model()
+            controller.start_recording()
+            controller.stop_recording()
+        rows = self.store.list()
+        return injected, rows, events, copied, notified
+
+    def test_unchanged_focus_types_the_text(self):
+        injected, rows, _events, copied, _n = self._run(['com.app.a', 'com.app.a'])
+        self.assertEqual(injected, ['Hello world.'])
+        self.assertEqual(rows[0].target_app, 'com.app.a')
+        self.assertTrue(rows[0].success)
+        copied.assert_not_called()
+
+    def test_moved_focus_holds_the_text_instead_of_typing_it(self):
+        injected, rows, events, copied, notified = self._run(['com.app.a', 'com.app.b'])
+        self.assertEqual(injected, [])
+        copied.assert_called_once_with('Hello world.')
+        row = rows[0]
+        self.assertEqual(row.inject_method, 'held')
+        self.assertFalse(row.success)
+        # The row records where the words were meant to go.
+        self.assertEqual(row.target_app, 'com.app.a')
+        final = events[-1]
+        self.assertEqual(final.state, DictationState.READY)
+        self.assertIn('com.app.b', final.message)
+        self.assertIn('clipboard', final.message)
+        notified.assert_called_once()
+
+    def test_unknown_focus_on_either_side_still_types(self):
+        for sequence in (['com.app.a', None], [None, 'com.app.b'], [None, None]):
+            injected, _rows, _e, _c, _n = self._run(sequence)
+            self.assertEqual(injected, ['Hello world.'], sequence)
+
+    def test_the_policy_table(self):
+        from controller import focus_policy
+
+        self.assertEqual(focus_policy('a', 'a'), 'inject')
+        self.assertEqual(focus_policy('a', 'b'), 'hold')
+        self.assertEqual(focus_policy(None, 'b'), 'inject')
+        self.assertEqual(focus_policy('a', None), 'inject')
+        self.assertEqual(focus_policy(None, None), 'inject')
+
+
 class CanStartRecordingTests(unittest.TestCase):
     """`can_start_recording()` is the rule the hotkey wiring consults before it
     shows the glyph and opens the mic. It has to agree with `start_recording`

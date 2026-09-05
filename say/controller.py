@@ -49,6 +49,25 @@ Logger = Callable[[str], None]
 Injector = Callable[[str], InjectionResult]
 
 
+def focus_policy(started_in: str | None, now_in: str | None) -> str:
+    """Should the transcript be typed, given where the recording began and
+    where the keyboard focus is now? Returns 'inject' or 'hold'.
+
+    The keystrokes go wherever focus is at the instant transcription ends,
+    and with a large Whisper model that is 2 to 44 seconds after the key was
+    released — long enough to switch to Slack. Typing a dictation meant for
+    one document into another window is the worst thing this engine can do
+    with a correct transcript, so a moved focus holds the text instead:
+    clipboard, history, a notification saying where it went.
+
+    Unknown on either side means the old behaviour: no AppKit, or an app with
+    no bundle identifier, is not evidence that focus moved.
+    """
+    if not started_in or not now_in:
+        return 'inject'
+    return 'inject' if started_in == now_in else 'hold'
+
+
 def preview_text(text: str, limit: int = 80) -> str:
     """Return a short, non-persistent transcript preview."""
     clean = ' '.join(text.split())
@@ -76,6 +95,9 @@ class DictationController:
         self.state = DictationState.IDLE
         self._recording = False
         self._recording_mode: str | None = None
+        # The app that had focus when the recording began — where the words
+        # were meant to go. Compared against the focus at injection time.
+        self._target_app: str | None = None
         self._lock = threading.RLock()
         # Streaming transcription session for the current recording, if any.
         self._session: Any = None
@@ -229,6 +251,9 @@ class DictationController:
                 return False
             self._recording = True
             self._recording_mode = mode
+            # Captured now, not after transcription: this is the document the
+            # user was looking at when they pressed the key.
+            self._target_app = get_frontmost_app()
             try:
                 self._begin_streaming()
                 self.recorder.start()
@@ -329,11 +354,12 @@ class DictationController:
             )
             return True
 
-        # Capture frontmost app id BEFORE injection — by the time we inject
-        # focus has not changed, but reading first is cheap and avoids any
-        # race where a paste could shift focus on certain apps. Read before
-        # post-processing too, so per-app profiles have it available.
-        target_app = get_frontmost_app()
+        # Where the recording began is where the words were meant to go; where
+        # focus is now decides whether typing them is still safe.
+        started_in = self._target_app
+        now_in = get_frontmost_app()
+        target_app = started_in or now_in
+        decision = focus_policy(started_in, now_in)
 
         text = self._postprocess(text, target_app)
         if not text:
@@ -368,6 +394,12 @@ class DictationController:
             )
         except Exception:
             _log.exception('Failed to persist transcript before injection')
+
+        if decision == 'hold':
+            return self._hold_transcript(
+                store, transcript_id, text, audio, transcript_preview,
+                started_in, now_in, duration, inference_seconds,
+            )
 
         result = self.injector(text)
 
@@ -430,6 +462,42 @@ class DictationController:
             success=False,
         )
         return False
+
+    def _hold_transcript(
+        self, store, transcript_id, text, audio, transcript_preview,
+        started_in, now_in, duration, inference_seconds,
+    ) -> bool:
+        """Focus moved while we were transcribing: keep the words, do not type.
+
+        The transcript is already in history; putting it on the clipboard too
+        makes recovery one paste. Recorded as `held`, not as a failure of the
+        injector — nothing broke, the user simply went somewhere else.
+        """
+        recovered = self._copy_to_clipboard(text)
+        if store is not None and transcript_id:
+            try:
+                store.set_outcome(transcript_id, success=False, inject_method='held')
+                self._save_recording(store, transcript_id, audio)
+            except Exception:
+                _log.exception('Failed to record the held transcript')
+        where = now_in or 'another app'
+        detail = 'copied to the clipboard' if recovered else 'saved to history'
+        message = f'Focus moved to {where} — transcript {detail}'
+        _log.info('Held transcript: began in %s, focus now in %s', started_in, now_in)
+        self._emit(DictationState.READY, message, preview=transcript_preview)
+        notify_error(message)
+        get_ledger().record(
+            event='held',
+            stage='injection',
+            audio_seconds=round(duration, 3),
+            inference_seconds=round(inference_seconds, 3),
+            model=config.MODEL,
+            started_in=started_in,
+            now_in=now_in,
+            recovered_to_clipboard=recovered,
+            success=False,
+        )
+        return True
 
     @staticmethod
     def _copy_to_clipboard(text: str) -> bool:
