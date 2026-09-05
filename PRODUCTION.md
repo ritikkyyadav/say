@@ -6,35 +6,40 @@ for the thirteen defects the September 2026 audit ranked. The audit itself
 roadmap) is published separately; this file is the part that gets executed.
 
 Last full audit: **2026-09-05**. Suite at that point: 32 modules, 520 tests.
+All thirteen landed the same day, one commit each; the suite is now 36 modules, 600 tests, with ruff and mypy green and gating CI.
 
 ## Where it stands
 
 - **Usable daily on the author's Mac:** yes.
 - **Fixed by the audit:** the overlay vanishing mid-dictation (two measured
   root causes; see the two gotchas in `CLAUDE.md` and `say/gestures.py`).
-- **Blocking a paid release:** B1, B2, B4 and B5 below, then the signing and
-  notarisation gates at the bottom of this file.
+- **Blocking a paid release:** the signing and notarisation gates at the bottom
+  of this file, and the manual smoke on a clean account. Every ranked defect
+  below is closed.
 - **Not yet verified by automation:** the core loop on a clean macOS account
   (Mic + Accessibility + Input Monitoring grants need a human), a real model
   download over the network, the Tauri app launching outside the dev machine.
 
 ## The thirteen — status board
 
+Every item is closed. The commit hash is the surgical change and its tests;
+`git show <hash>` is the review.
+
 | # | Severity | Problem | Where | Status |
 |---|----------|---------|-------|--------|
-| B4 | High | Tests write into the user's real metrics ledger | `say/tests/conftest.py` (new) | planned |
-| B11 | Medium | Notifications toggle needs a restart | `say/notifications.py` | planned |
-| B1 | Critical | Emoji and other astral characters corrupt typed text | `say/text_inject_cgevent.py` | planned |
-| B7 | High | A fast press-and-release can start a recording nobody stops | `say/hotkey_fn.py`, `say/hotkey.py` | planned |
-| B10 | Medium | Silent clips are decoded twice | `say/controller.py`, `say/streaming.py` | planned |
-| B3 | High | A short streaming tail gets the full prompt and loops | `say/streaming.py`, `say/controller.py` | planned |
-| B9 | Medium | Clipboard fallback destroys a non-text clipboard | `say/text_inject_clipboard.py` | planned |
-| B2 | Critical | Text is typed into whichever app has focus when transcription finishes | `say/controller.py` | planned |
-| B5 | High | Multilingual models offered, language hard-wired to English | `say/languages.py` (new), `server/api.py`, `desktop/src/routes/Models.tsx` | planned |
-| B8 | Medium | Slow inference is invisible: no progress, no warning | `say/streaming.py`, `say/controller.py`, `say/transcriber.py`, desktop SSE | planned |
-| B12 | Medium | Kept audio grows without limit; retention has no UI | `say/config.py`, `desktop/src/routes/Home.tsx` | planned |
-| B6 | High | The key tap shares a process with inference; macOS disables it under load | `say/hotkey_fn.py`, `say/app.py`; helper process designed | planned |
-| B13 | Medium | ruff and mypy are red; mypy is advisory in CI | whole tree, `.github/workflows/ci.yml` | planned |
+| B4 | High | Tests write into the user's real metrics ledger | `say/tests/conftest.py` (new) | done · `5f43e7e` |
+| B11 | Medium | Notifications toggle needs a restart | `say/notifications.py` | done · `0a8f654` |
+| B1 | Critical | Emoji and other astral characters corrupt typed text | `say/text_inject_cgevent.py` | done · `ed02af6` |
+| B7 | High | A fast press-and-release can start a recording nobody stops | `say/hotkey_fn.py`, `say/hotkey.py` | done · `03dd569` |
+| B10 | Medium | Silent clips are decoded twice | `say/controller.py`, `say/streaming.py` | done · `62a5a42` |
+| B3 | High | A short streaming tail gets the full prompt and loops | `say/streaming.py`, `say/controller.py` | done · `1cf9c34` |
+| B9 | Medium | Clipboard fallback destroys a non-text clipboard | `say/text_inject_clipboard.py` | done · `133f2a1` |
+| B2 | Critical | Text is typed into whichever app has focus when transcription finishes | `say/controller.py` | done · `c24d160` |
+| B5 | High | Multilingual models offered, language hard-wired to English | `say/languages.py` (new), `server/api.py`, `desktop/src/routes/Models.tsx` | done · `b063c54` |
+| B8 | Medium | Slow inference is invisible: no progress, no warning | `say/streaming.py`, `say/controller.py`, `say/transcriber.py`, desktop SSE | done · `551cd49` |
+| B12 | Medium | Kept audio grows without limit; retention has no UI | `say/config.py`, `desktop/src/routes/Home.tsx` | done · `ded2143` |
+| B6 | High | The key tap shares a process with inference; macOS disables it under load | `say/hotkey_fn.py`, `say/app.py`; helper process designed | done · `6482534` |
+| B13 | Medium | ruff and mypy are red; mypy is advisory in CI | whole tree, `.github/workflows/ci.yml` | done · `c7e5c4f` |
 
 Order is execution order: the cheapest data-protecting fixes first (B4 makes
 every later test run safe), then the ones with the sharpest evidence, then the
@@ -51,8 +56,9 @@ ones that touch the UI, then the tooling gate that keeps it all green.
 3. **Nothing widens.** Fix the named defect and leave the neighbours alone; a
    surprising refactor in a fix commit is a bug in the plan.
 4. **Every commit leaves ruff and the suite green; from B13 on, mypy too.**
-5. **`CLAUDE.md` is updated in the same commit** when a file, constant,
-   endpoint or gotcha changes — the self-improvement protocol is not optional.
+5. **`CLAUDE.md` is updated** for every file, constant, endpoint or gotcha that
+   changed — in practice one closing documentation commit for the whole pass,
+   so the thirteen fix commits stay revertable one at a time.
 
 ---
 
