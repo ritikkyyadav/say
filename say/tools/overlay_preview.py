@@ -211,7 +211,7 @@ def main() -> int:
             frame_times.append(time.perf_counter())
             original_frame()
 
-        overlay._frame = timed_frame
+        overlay._frame = timed_frame  # type: ignore[method-assign]
 
     captured: list = []
     if args.capture:

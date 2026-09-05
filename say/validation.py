@@ -17,7 +17,7 @@ def validate_config(cfg: ModuleType = config) -> list[str]:
     errors: list[str] = []
 
     model = getattr(cfg, 'MODEL', None)
-    valid_models = getattr(cfg, 'VALID_MODELS', set())
+    valid_models: set[str] = getattr(cfg, 'VALID_MODELS', set())
     if not isinstance(model, str) or not model.strip():
         errors.append('MODEL must be a non-empty string.')
     elif valid_models and model not in valid_models:
@@ -31,14 +31,14 @@ def validate_config(cfg: ModuleType = config) -> list[str]:
             errors.append(str(exc))
 
     inject_method = getattr(cfg, 'INJECT_METHOD', None)
-    valid_inject_methods = getattr(cfg, 'VALID_INJECT_METHODS', set())
+    valid_inject_methods: set[str] = getattr(cfg, 'VALID_INJECT_METHODS', set())
     if inject_method not in valid_inject_methods:
         errors.append(
             f'INJECT_METHOD must be one of: {", ".join(sorted(valid_inject_methods))}.'
         )
 
     overlay_contrast = getattr(cfg, 'OVERLAY_CONTRAST', 'auto')
-    valid_contrast = getattr(cfg, 'VALID_OVERLAY_CONTRAST', set())
+    valid_contrast: set[str] = getattr(cfg, 'VALID_OVERLAY_CONTRAST', set())
     if valid_contrast and overlay_contrast not in valid_contrast:
         errors.append(
             f'OVERLAY_CONTRAST must be one of: {", ".join(sorted(valid_contrast))}.'
@@ -109,7 +109,7 @@ def validate_config(cfg: ModuleType = config) -> list[str]:
         errors.append('SAVE_RECORDINGS must be True or False.')
 
     retention_mode = getattr(cfg, 'RECORDINGS_RETENTION_MODE', None)
-    valid_modes = getattr(cfg, 'VALID_RETENTION_MODES', set())
+    valid_modes: set[str] = getattr(cfg, 'VALID_RETENTION_MODES', set())
     if retention_mode not in valid_modes:
         errors.append(
             f'RECORDINGS_RETENTION_MODE must be one of: {", ".join(sorted(valid_modes))}.'

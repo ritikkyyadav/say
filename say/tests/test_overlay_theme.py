@@ -37,7 +37,7 @@ class HexParsing(unittest.TestCase):
     def test_garbage_raises(self):
         for bad in ('', 'red', '#12', '#1234567', 'zzzzzz', None):
             with self.assertRaises(T.BadColor):
-                T.parse_hex(bad)  # type: ignore[arg-type]
+                T.parse_hex(bad)
 
     def test_normalise_is_canonical(self):
         # The same colour must never persist two ways, or the UI cannot tell

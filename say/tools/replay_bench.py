@@ -418,7 +418,7 @@ def main() -> int:
         print(f'{len(corpus)} clips >= {args.min_words} words, {total/60:.1f} min of audio')
         durs = sorted(c['audio_seconds'] for c in corpus)
         print(f'  duration  min {durs[0]:.1f}s  median {durs[len(durs)//2]:.1f}s  max {durs[-1]:.1f}s')
-        models = {}
+        models: dict[str, int] = {}
         for c in corpus:
             models[c['model']] = models.get(c['model'], 0) + 1
         for m, n in models.items():

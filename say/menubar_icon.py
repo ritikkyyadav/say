@@ -21,6 +21,7 @@ import hashlib
 import os
 from enum import Enum
 
+import brand
 from AppKit import (
     NSBezierPath,
     NSBitmapImageFileTypePNG,
@@ -36,8 +37,6 @@ from AppKit import (
     NSRectFillUsingOperation,
 )
 from logging_setup import get_logger
-
-import brand
 
 _log = get_logger('menubar_icon')
 

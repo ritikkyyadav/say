@@ -104,7 +104,7 @@ def _user_first_name() -> str:
     """Best-effort first-name lookup; falls back to '$USER' or 'there'."""
     if sys.platform == 'darwin':
         try:
-            from Foundation import NSFullUserName  # type: ignore
+            from Foundation import NSFullUserName
 
             full = str(NSFullUserName() or '').strip()
             if full:
@@ -165,11 +165,11 @@ def _accessibility_trusted() -> bool:
     showing the permissions banner.
     """
     try:
-        import HIServices  # type: ignore[import-not-found]
+        import HIServices
         return bool(HIServices.AXIsProcessTrusted())
     except Exception:
         try:
-            from ApplicationServices import AXIsProcessTrusted  # type: ignore[import-not-found]
+            from ApplicationServices import AXIsProcessTrusted
             return bool(AXIsProcessTrusted())
         except Exception:
             return False
@@ -447,7 +447,7 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
             settings_mod.set_value('OVERLAY_PATTERN', pattern)
 
         if body.contrast is not None:
-            valid = getattr(config, 'VALID_OVERLAY_CONTRAST', set())
+            valid: set[str] = getattr(config, 'VALID_OVERLAY_CONTRAST', set())
             if valid and body.contrast not in valid:
                 raise HTTPException(
                     status_code=400,

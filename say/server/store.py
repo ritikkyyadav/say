@@ -26,6 +26,11 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+# Rows as the API returns them. Named at module level because inside the
+# class body `list` is the `TranscriptStore.list` method, and an annotation
+# written after that definition would resolve to it.
+_Rows = list[dict[str, Any]]
+
 # ── Path resolution ─────────────────────────────────────────────────────────
 
 
@@ -37,7 +42,7 @@ def _app_data_dir() -> Path:
     minimal install.
     """
     try:
-        from platformdirs import user_data_dir  # type: ignore
+        from platformdirs import user_data_dir
 
         return Path(user_data_dir('Say', appauthor=False))
     except Exception:
@@ -65,7 +70,7 @@ def get_frontmost_app() -> str | None:
     if sys.platform != 'darwin':
         return None
     try:
-        from AppKit import NSWorkspace  # type: ignore
+        from AppKit import NSWorkspace
 
         ws = NSWorkspace.sharedWorkspace()
         app = ws.frontmostApplication()
@@ -549,7 +554,7 @@ class TranscriptStore:
             'transcript_count': self.count(),
         }
 
-    def desktop_usage(self, *, days: int = 30, today: date | None = None) -> list[dict[str, Any]]:
+    def desktop_usage(self, *, days: int = 30, today: date | None = None) -> _Rows:
         """Per-app usage rollup over the last `days` days, sorted by count desc."""
         today = today or datetime.now(UTC).date()
         cutoff = (datetime.combine(today, datetime.min.time()) - timedelta(days=days)).isoformat() + 'Z'
@@ -575,7 +580,7 @@ class TranscriptStore:
             for r in rows
         ]
 
-    def heatmap(self, *, days: int = 180, today: date | None = None) -> list[dict[str, Any]]:
+    def heatmap(self, *, days: int = 180, today: date | None = None) -> _Rows:
         """Per-day transcript counts for the last `days` days. Includes zeros."""
         today = today or datetime.now(UTC).date()
         start = today - timedelta(days=days - 1)

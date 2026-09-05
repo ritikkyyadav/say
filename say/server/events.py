@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Iterator
 from typing import Any
 
 
@@ -57,7 +56,7 @@ class EventBus:
         with self._lock:
             return dict(self._last_state)
 
-    async def subscribe(self) -> 'EventBus._Subscription':
+    async def subscribe(self) -> EventBus._Subscription:
         loop = asyncio.get_running_loop()
         with self._lock:
             self._loop = loop
@@ -75,17 +74,17 @@ class EventBus:
                 pass
 
     class _Subscription:
-        def __init__(self, bus: 'EventBus', q: asyncio.Queue[dict[str, Any]]):
+        def __init__(self, bus: EventBus, q: asyncio.Queue[dict[str, Any]]):
             self._bus = bus
             self._q = q
 
-        async def __aenter__(self) -> 'EventBus._Subscription':
+        async def __aenter__(self) -> EventBus._Subscription:
             return self
 
         async def __aexit__(self, *_exc) -> None:
             self._bus._unsubscribe(self._q)
 
-        async def __aiter__(self) -> 'EventBus._Subscription':
+        async def __aiter__(self) -> EventBus._Subscription:
             return self
 
         async def __anext__(self) -> dict[str, Any]:

@@ -98,8 +98,8 @@ def cmd_stats(limit: int | None) -> int:
         return 1
 
     bands = waveform.BAND_COUNT
-    voiced = [[] for _ in range(bands)]
-    heights = [[] for _ in range(bands)]
+    voiced: list[list[float]] = [[] for _ in range(bands)]
+    heights: list[list[float]] = [[] for _ in range(bands)]
     open_blocks = 0
     total_blocks = 0
     seconds = 0.0

@@ -178,7 +178,7 @@ class SwitchTests(_ConfigPatch):
 
     def test_never_raises_on_bad_config(self):
         """A malformed dictionary must not cost the user their dictation."""
-        config.DICTIONARY = [None, 123, 'Claude Code']  # type: ignore[list-item]
+        config.DICTIONARY = [None, 123, 'Claude Code']
         out = postprocess.apply('i use cloud code')
         self.assertIn('Claude Code', out)
 

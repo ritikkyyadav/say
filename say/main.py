@@ -88,11 +88,15 @@ def main() -> int:
         mode = listener_obj.mode if listener_obj is not None else 'ptt'
         controller.start_recording(mode=mode)
 
+    def on_cancel() -> None:
+        controller.cancel_recording()
+        stop()
+
     try:
         info = make_listener(
             on_start=on_start,
             on_stop=controller.stop_recording,
-            on_cancel=lambda: (controller.cancel_recording(), stop()),
+            on_cancel=on_cancel,
         )
     except RuntimeError as exc:
         print(f'[✗] {exc}')

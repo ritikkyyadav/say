@@ -15,6 +15,7 @@ import threading
 import time
 from collections.abc import Callable
 from enum import Enum
+from typing import Any
 
 import config
 from callback_pump import CallbackPump
@@ -117,10 +118,10 @@ class HotkeyListener:
 
     def __init__(
         self,
-        on_press_cb: Callable[[], None],
-        on_release_cb: Callable[[], None],
+        on_press_cb: Callable[[], object],
+        on_release_cb: Callable[[], object],
         hotkey: str | None = None,
-        on_cancel_cb: Callable[[], None] | None = None,
+        on_cancel_cb: Callable[[], object] | None = None,
     ):
         from pynput import keyboard
 
@@ -135,7 +136,7 @@ class HotkeyListener:
         self._on_press_cb = on_press_cb
         self._on_release_cb = on_release_cb
         self._on_cancel_cb = on_cancel_cb
-        self._listener = None
+        self._listener: Any = None
         # In order, off the pynput thread — see callback_pump.
         self._pump = CallbackPump(name='say-legacy-callbacks')
 
@@ -185,7 +186,7 @@ class HotkeyListener:
                 normalised[getattr(keyboard.Key, source)] = getattr(keyboard.Key, target)
         return normalised.get(key, key)
 
-    def _fire(self, callback: Callable[[], None]) -> None:
+    def _fire(self, callback: Callable[[], object]) -> None:
         self._pump.fire(callback)
 
     def _on_press(self, key) -> None:

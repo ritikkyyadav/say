@@ -248,7 +248,7 @@ class WatcherTests(unittest.TestCase):
         """Stand in for the focused text field: one value now, another later."""
         seq = [before, after]
         readback._focused_element = lambda: object()
-        readback._read_value = lambda el: seq.pop(0) if seq else after
+        readback._read_value = lambda el: seq.pop(0) if seq else after  # type: ignore[assignment]
 
     def test_an_edit_inside_our_span_is_recorded(self):
         self._fake_ax(

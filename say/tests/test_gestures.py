@@ -99,8 +99,8 @@ class ArmingTests(unittest.TestCase):
         order: list[str] = []
         overlay = FakeOverlay()
         recorder = FakeRecorder()
-        overlay.calls = order  # type: ignore[assignment]
-        recorder.calls = order  # type: ignore[assignment]
+        overlay.calls = order
+        recorder.calls = order
         bridge, _ = _bridge(FakeController(DictationState.READY), recorder, overlay)
 
         bridge.on_arm()

@@ -77,12 +77,12 @@ def inject(text: str) -> InjectionResult:
     method = config.INJECT_METHOD
 
     if method == 'accessibility':
-        result = inject_text_cgevent(text)
-        return InjectionResult(result.success, 'accessibility', result.error)
+        cg = inject_text_cgevent(text)
+        return InjectionResult(cg.success, 'accessibility', cg.error)
 
     if method == 'clipboard':
-        result = inject_text_clipboard(text)
-        return InjectionResult(result.success, 'clipboard', result.error)
+        clip = inject_text_clipboard(text)
+        return InjectionResult(clip.success, 'clipboard', clip.error)
 
     cge = inject_text_cgevent(text)
     if cge.success:

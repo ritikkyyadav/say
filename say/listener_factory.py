@@ -17,7 +17,8 @@ from logging_setup import get_logger
 _log = get_logger('listener_factory')
 
 
-Callback = Callable[[], None]
+# Return values are ignored: the controller's start/stop/cancel return a bool.
+Callback = Callable[[], object]
 
 # How often the upgrader re-checks Accessibility, and how far it backs off
 # when the grant is present but the tap is still refused (which usually means

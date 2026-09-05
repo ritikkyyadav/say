@@ -21,15 +21,20 @@ spawning a second one.
 
 from __future__ import annotations
 
+import brand
+import config
+import model_catalog
+import model_manager
 import objc
+import settings as settings_mod
 from AppKit import (
     NSBackingStoreBuffered,
     NSBezelStyleRounded,
     NSImageView,
     NSMakeRect,
     NSPopUpButton,
-    NSSegmentStyleRounded,
     NSSegmentedControl,
+    NSSegmentStyleRounded,
     NSSlider,
     NSSwitch,
     NSTextField,
@@ -41,12 +46,6 @@ from AppKit import (
 )
 from logging_setup import get_logger
 from Quartz import CGColorCreateGenericRGB
-
-import brand
-import config
-import model_catalog
-import model_manager
-import settings as settings_mod
 
 _log = get_logger('settings_window')
 
@@ -77,7 +76,7 @@ _CONTRAST_VALUES = ['auto', 'system', 'dark', 'light']
 
 # ── Public API ───────────────────────────────────────────────────
 
-_singleton: '_SettingsController | None' = None
+_singleton: _SettingsController | None = None
 
 
 def open_settings() -> None:

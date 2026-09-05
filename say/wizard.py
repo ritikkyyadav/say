@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import brand
 import objc
 from AppKit import (
     NSBackingStoreBuffered,
@@ -38,8 +39,6 @@ from AppKit import (
 from logging_setup import get_logger
 from permissions import open_privacy_settings
 from Quartz import CGColorCreateGenericRGB
-
-import brand
 
 _log = get_logger('wizard')
 
@@ -338,8 +337,8 @@ class _PillButton(NSButton):
         from AppKit import (
             NSAttributedString,
             NSCenterTextAlignment,
-            NSForegroundColorAttributeName,
             NSFontAttributeName,
+            NSForegroundColorAttributeName,
             NSMutableParagraphStyle,
             NSParagraphStyleAttributeName,
         )

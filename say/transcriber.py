@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import time
 from threading import Lock
+from typing import Any
 
 import config
 import model_catalog
@@ -182,8 +183,8 @@ class Transcriber:
 
     def __init__(self, model_path: str | None = None):
         self._model_path = model_path or config.MODEL
-        self._mlx_whisper = None
-        self._ms = None            # moonshine_voice Transcriber, when active
+        self._mlx_whisper: Any = None
+        self._ms: Any = None       # moonshine_voice Transcriber, when active
         self._backend: str | None = None
         self._loaded = False
         self._lock = Lock()

@@ -71,11 +71,11 @@ class FnHotkeyListener:
 
     def __init__(
         self,
-        on_start_cb: Callable[[], None],
-        on_stop_cb: Callable[[], None],
-        on_cancel_cb: Callable[[], None] | None = None,
-        on_arm_cb: Callable[[], None] | None = None,
-        on_disarm_cb: Callable[[], None] | None = None,
+        on_start_cb: Callable[[], object],
+        on_stop_cb: Callable[[], object],
+        on_cancel_cb: Callable[[], object] | None = None,
+        on_arm_cb: Callable[[], object] | None = None,
+        on_disarm_cb: Callable[[], object] | None = None,
     ):
         self._on_start = on_start_cb
         self._on_stop = on_stop_cb
@@ -112,7 +112,7 @@ class FnHotkeyListener:
     def hotkey_label(self) -> str:
         return 'Fn (hold) / Fn+Space (toggle)'
 
-    def _fire(self, callback: Callable[[], None]) -> None:
+    def _fire(self, callback: Callable[[], object]) -> None:
         """Run a callback off the tap thread, after every callback fired before it."""
         self._pump.fire(callback)
 

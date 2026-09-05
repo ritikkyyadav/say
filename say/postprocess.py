@@ -266,12 +266,11 @@ def apply_replacements(text: str) -> str:
     """Literal, user-defined substitutions. Whole-word, case-insensitive."""
     for wrong, right in _replacements().items():
         pattern = r'\b' + re.escape(wrong) + r'\b'
-        text = re.sub(
-            pattern,
-            lambda m, r=right: _match_case(r, m.group(0)),
-            text,
-            flags=re.IGNORECASE,
-        )
+
+        def _swap(m: re.Match[str], r: str = right) -> str:
+            return _match_case(r, m.group(0))
+
+        text = re.sub(pattern, _swap, text, flags=re.IGNORECASE)
     return text
 
 
