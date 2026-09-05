@@ -17,6 +17,7 @@ from collections.abc import Callable
 from enum import Enum
 
 import config
+from callback_pump import CallbackPump
 from logging_setup import get_logger
 
 _log = get_logger('hotkey')
@@ -135,6 +136,8 @@ class HotkeyListener:
         self._on_release_cb = on_release_cb
         self._on_cancel_cb = on_cancel_cb
         self._listener = None
+        # In order, off the pynput thread — see callback_pump.
+        self._pump = CallbackPump(name='say-legacy-callbacks')
 
     @property
     def hotkey_label(self) -> str:
@@ -182,9 +185,8 @@ class HotkeyListener:
                 normalised[getattr(keyboard.Key, source)] = getattr(keyboard.Key, target)
         return normalised.get(key, key)
 
-    @staticmethod
-    def _fire(callback: Callable[[], None]) -> None:
-        threading.Thread(target=callback, daemon=True).start()
+    def _fire(self, callback: Callable[[], None]) -> None:
+        self._pump.fire(callback)
 
     def _on_press(self, key) -> None:
         key = self._normalise_key(key)
@@ -268,6 +270,7 @@ class HotkeyListener:
             self._held_keys.clear()
             self._mode = _Mode.IDLE
             self._combo_satisfied = False
+        self._pump.stop()
 
     def force_idle(self) -> None:
         """Snap to idle without firing callbacks. Used when recording is

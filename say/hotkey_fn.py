@@ -21,6 +21,7 @@ import time
 from collections.abc import Callable
 from enum import Enum
 
+from callback_pump import CallbackPump
 from logging_setup import get_logger
 
 _log = get_logger('hotkey_fn')
@@ -78,14 +79,18 @@ class FnHotkeyListener:
         self._recording_active = False
         self._loop_started = threading.Event()
         self._tap_creation_failed = False
+        # Callbacks run off the tap thread, but in order: a thread per
+        # callback let a quick release's `on_stop` overtake its own `on_start`
+        # and leave a recording that nothing ever stopped. See callback_pump.
+        self._pump = CallbackPump(name='say-fn-callbacks')
 
     @property
     def hotkey_label(self) -> str:
         return 'Fn (hold) / Fn+Space (toggle)'
 
     def _fire(self, callback: Callable[[], None]) -> None:
-        """Fire a callback on a separate thread."""
-        threading.Thread(target=callback, daemon=True).start()
+        """Run a callback off the tap thread, after every callback fired before it."""
+        self._pump.fire(callback)
 
     def _start_recording(self) -> None:
         """Begin recording (idempotent)."""
@@ -499,6 +504,7 @@ class FnHotkeyListener:
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
         self._thread = None
+        self._pump.stop()
 
     @property
     def is_recording(self) -> bool:
