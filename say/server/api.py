@@ -59,6 +59,12 @@ class ProfileRequest(BaseModel):
     onboarded: bool | None = None
 
 
+class LanguageRequest(BaseModel):
+    """Body for POST /language. `null` means detect automatically."""
+
+    code: str | None = None
+
+
 class OverlayConfigRequest(BaseModel):
     """Body for POST /overlay — every field optional (partial update)."""
 
@@ -254,6 +260,49 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
             settings_mod.set_value('ONBOARDED', bool(body.onboarded))
 
         return await user_profile(request)
+
+    # ── Language ─────────────────────────────────────────────────────────
+
+    def _language_payload() -> dict[str, Any]:
+        import languages
+        import model_manager
+
+        code = languages.current()
+        return {
+            'code': code,
+            'auto': code is None,
+            'name': languages.name_for(code),
+            'options': languages.options(),
+            # Honest about the bundled model: Moonshine is English-only and
+            # takes no language argument, so the choice is inert there.
+            'applies_to_active_model': languages.applies_to(
+                model_manager.get_manager().active_model()
+            ),
+        }
+
+    @app.get('/language')
+    async def get_language(request: Request) -> dict[str, Any]:
+        _check_auth(app, request)
+        return _language_payload()
+
+    @app.post('/language')
+    async def set_language(request: Request, body: LanguageRequest) -> dict[str, Any]:
+        """Persist the decoder language; `null` = automatic detection.
+
+        Until this existed `LANGUAGE` was 'en' with no way to change it from
+        the desktop app, so the multilingual models the Models page offered
+        could not actually transcribe anything but English.
+        """
+        _check_auth(app, request)
+        import languages
+        import settings as settings_mod
+
+        try:
+            code = languages.normalise(body.code)
+        except languages.BadLanguage as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        settings_mod.set_value('LANGUAGE', code)
+        return _language_payload()
 
     @app.get('/transcripts')
     async def list_transcripts(

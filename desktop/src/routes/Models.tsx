@@ -230,6 +230,47 @@ function Card({ m, match }: { m: ModelInfo; match: boolean }) {
   );
 }
 
+function LanguageRow() {
+  // The one setting the multilingual promise depends on. `null` is
+  // automatic detection, which is what lets a model switch mid-sentence.
+  const qc = useQueryClient();
+  const lang = useQuery({ queryKey: ['language'], queryFn: api.language });
+  const save = useMutation({
+    mutationFn: (code: string | null) => api.setLanguage(code),
+    onSuccess: (next) => qc.setQueryData(['language'], next),
+  });
+  const cfg = lang.data;
+  return (
+    <Reveal className="strip" style={{ marginTop: 14, gap: 16, flexWrap: 'wrap' }}>
+      <span>Language</span>
+      <span style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <select
+          className="sel"
+          aria-label="Language"
+          value={cfg?.code ?? 'auto'}
+          disabled={!cfg || save.isPending}
+          onChange={(e) => save.mutate(e.target.value === 'auto' ? null : e.target.value)}
+        >
+          <option value="auto">Automatic — detect, switch mid-sentence</option>
+          {(cfg?.options ?? []).map((o) => (
+            <option key={o.code} value={o.code}>
+              {o.name}
+            </option>
+          ))}
+        </select>
+        {cfg && !cfg.applies_to_active_model ? (
+          <span className="card-s">
+            The model in use is English-only and ignores this. It applies to the Whisper models.
+          </span>
+        ) : null}
+        {save.error ? (
+          <span className="card-s">{save.error instanceof Error ? save.error.message : 'Could not save'}</span>
+        ) : null}
+      </span>
+    </Reveal>
+  );
+}
+
 export function Models() {
   const [intent, setIntent] = useState<Intent>('fast');
   const { data, isLoading, error } = useQuery({
@@ -268,7 +309,7 @@ export function Models() {
     }
     return `**Download ${suggestion.name}.** It costs ${bytes(suggestion.download_bytes)} and ${downloadTime(suggestion.download_bytes)}, and in exchange ${
       intent === 'multi'
-        ? 'it understands 99 languages and lets you switch between them mid-sentence.'
+        ? 'it understands 99 languages. Set Language below to Automatic to switch between them mid-sentence.'
         : 'it stops guessing at names, jargon and unusual words.'
     }`;
   })();
@@ -310,6 +351,8 @@ export function Models() {
           </p>
         </div>
       </Reveal>
+
+      <LanguageRow />
 
       <div className="sec">
         {isLoading ? (

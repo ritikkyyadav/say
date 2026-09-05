@@ -90,6 +90,22 @@ export type UserProfile = {
   onboarded: boolean;
 };
 
+// ── Language ────────────────────────────────────────────────────────────
+// Which language the decoder expects. `code: null` means detect automatically,
+// which is what lets a multilingual model switch mid-sentence.
+
+export type LanguageOption = { code: string; name: string };
+
+export type LanguageConfig = {
+  code: string | null;
+  auto: boolean;
+  name: string;
+  options: LanguageOption[];
+  /** False when the active model ignores the setting (the bundled model is
+   *  English-only), so the UI can say so instead of implying a choice. */
+  applies_to_active_model: boolean;
+};
+
 // ── Vocabulary ─────────────────────────────────────────────────────────
 // What the transcripts say about the person who spoke them. Computed on the
 // engine (say/vocabulary.py) so the thresholds that decide whether a claim is
@@ -400,6 +416,11 @@ export const api = {
       headers: authHeaders(ep),
     });
   },
+
+  // ── Language ──────────────────────────────────────────────────────────
+  language: () => getJSON<LanguageConfig>('/language'),
+  setLanguage: (code: string | null) =>
+    sendJSON<LanguageConfig>('POST', '/language', { code }),
 
   // ── Overlay appearance ────────────────────────────────────────────────
   overlay: () => getJSON<OverlayConfig>('/overlay'),

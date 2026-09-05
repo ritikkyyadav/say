@@ -42,6 +42,7 @@ class ApiTests(unittest.TestCase):
             for k in (
                 'SAVE_RECORDINGS', 'RECORDINGS_RETENTION_MODE',
                 'RECORDINGS_RETENTION_DAYS', 'RECORDINGS_MAX_BYTES',
+                'LANGUAGE',
             )
         }
         # Hermetic Moonshine cache so model state never reads the dev machine.
@@ -241,3 +242,57 @@ class ApiTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LanguageApiTests(ApiTests):
+    """B5: the language is reachable, validated, persisted and honest."""
+
+    def _auth(self):
+        return {'Authorization': 'Bearer secret'}
+
+    def test_get_reports_the_current_language_and_options(self):
+        import config
+
+        config.LANGUAGE = 'en'
+        r = self.client.get('/language', headers=self._auth())
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body['code'], 'en')
+        self.assertFalse(body['auto'])
+        self.assertEqual(body['name'], 'English')
+        self.assertIn('hi', [o['code'] for o in body['options']])
+        self.assertIn('applies_to_active_model', body)
+
+    def test_requires_auth(self):
+        self.assertEqual(self.client.get('/language').status_code, 401)
+        self.assertEqual(self.client.post('/language', json={'code': 'hi'}).status_code, 401)
+
+    def test_set_persists_and_mirrors_onto_config(self):
+        import config
+        import settings
+
+        r = self.client.post('/language', json={'code': 'hi'}, headers=self._auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['code'], 'hi')
+        self.assertEqual(r.json()['name'], 'Hindi')
+        self.assertEqual(config.LANGUAGE, 'hi')
+        self.assertEqual(settings.all_settings().get('LANGUAGE'), 'hi')
+
+    def test_null_means_automatic(self):
+        import config
+
+        r = self.client.post('/language', json={'code': None}, headers=self._auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()['auto'])
+        self.assertIsNone(config.LANGUAGE)
+
+    def test_a_bad_code_is_refused_and_nothing_written(self):
+        import config
+        import settings
+
+        config.LANGUAGE = 'en'
+        r = self.client.post('/language', json={'code': 'english'}, headers=self._auth())
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(config.LANGUAGE, 'en')
+        self.assertNotIn('LANGUAGE', settings.all_settings())
+
