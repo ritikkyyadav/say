@@ -23,11 +23,42 @@ _CHUNK_LEN = 20
 # Electron apps need this — without it they drop characters under load.
 _CHUNK_DELAY_S = 0.002
 
+# Stamped into `kCGEventSourceUserData` on every event we post, so the Fn
+# CGEventTap in `hotkey_fn` can recognise our own synthetic keystrokes and
+# ignore them. Without it the tap sees each injected chunk as the user typing:
+# a keystroke arriving while the trigger key is held is treated as an ordinary
+# Fn shortcut and abandons the gesture, so starting a new dictation while the
+# previous one is still being typed out would silently cancel it.
+INJECTED_EVENT_MARKER = 0x5A5900
+
 
 @dataclass(frozen=True)
 class InjectResult:
     success: bool
     error: str | None = None
+
+
+def _mark(Quartz, event) -> None:
+    """Tag an event as ours. Best-effort: injection matters more than the tag."""
+    try:
+        Quartz.CGEventSetIntegerValueField(
+            event, Quartz.kCGEventSourceUserData, INJECTED_EVENT_MARKER
+        )
+    except Exception:
+        pass
+
+
+def is_injected_event(Quartz, event) -> bool:
+    """True if `event` is one this module posted."""
+    try:
+        return (
+            Quartz.CGEventGetIntegerValueField(
+                event, Quartz.kCGEventSourceUserData
+            )
+            == INJECTED_EVENT_MARKER
+        )
+    except Exception:
+        return False
 
 
 def inject_text_cgevent(text: str) -> InjectResult:
@@ -48,12 +79,14 @@ def inject_text_cgevent(text: str) -> InjectResult:
             if evt_down is None:
                 return InjectResult(False, 'CGEventCreateKeyboardEvent returned None')
             Quartz.CGEventKeyboardSetUnicodeString(evt_down, len(chunk), chunk)
+            _mark(Quartz, evt_down)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, evt_down)
 
             evt_up = Quartz.CGEventCreateKeyboardEvent(None, 0, False)
             if evt_up is None:
                 return InjectResult(False, 'CGEventCreateKeyboardEvent returned None')
             Quartz.CGEventKeyboardSetUnicodeString(evt_up, len(chunk), chunk)
+            _mark(Quartz, evt_up)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, evt_up)
 
             time.sleep(_CHUNK_DELAY_S)

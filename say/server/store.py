@@ -97,6 +97,25 @@ CREATE TABLE IF NOT EXISTS transcripts (
     audio_path TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ts ON transcripts(ts_utc);
+
+-- What the user changed after Say typed for them. One row per *observed*
+-- correction; insertions nobody touched deliberately leave no row, so any
+-- rate computed here needs the insertion count as its denominator (see
+-- `correction_summary`). Only the span Say produced and what it became are
+-- stored — never the surrounding document. See corrections.py / readback.py.
+CREATE TABLE IF NOT EXISTS corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transcript_id INTEGER NOT NULL,
+    ts_utc TEXT NOT NULL,
+    source TEXT NOT NULL,          -- 'observed' (read-back) | 'manual' (in-app edit)
+    inserted TEXT NOT NULL,        -- what Say typed
+    corrected TEXT NOT NULL,       -- what it became
+    edit_distance INTEGER NOT NULL,-- word-level distance between the two
+    words INTEGER NOT NULL,        -- word count of `inserted` — the denominator
+    target_app TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_corr_ts ON corrections(ts_utc);
+CREATE INDEX IF NOT EXISTS idx_corr_transcript ON corrections(transcript_id);
 """
 
 
@@ -172,6 +191,15 @@ class TranscriptStore:
         cols = {r['name'] for r in self._conn.execute('PRAGMA table_info(transcripts)')}
         if 'audio_path' not in cols:
             self._conn.execute('ALTER TABLE transcripts ADD COLUMN audio_path TEXT')
+        if 'observed' not in cols:
+            # Whether the read-back actually compared this insertion against
+            # what the user left behind. Every row that predates the feature
+            # gets 0, which is the point: they were never looked at, and
+            # counting them as clean would report a pipeline that had never
+            # been measured as flawless.
+            self._conn.execute(
+                'ALTER TABLE transcripts ADD COLUMN observed INTEGER NOT NULL DEFAULT 0'
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -219,6 +247,22 @@ class TranscriptStore:
             self._conn.commit()
             return int(cur.lastrowid or 0)
 
+    def set_outcome(
+        self, transcript_id: int, *, success: bool, inject_method: str
+    ) -> None:
+        """Record how a transcript's insertion actually went.
+
+        The controller writes the row *before* attempting injection, so the
+        user's words survive even when delivery fails. This closes the loop
+        once the outcome is known.
+        """
+        with self._lock:
+            self._conn.execute(
+                'UPDATE transcripts SET success = ?, inject_method = ? WHERE id = ?',
+                (1 if success else 0, inject_method, int(transcript_id)),
+            )
+            self._conn.commit()
+
     def set_audio_path(self, transcript_id: int, audio_path: str) -> None:
         """Link a saved WAV to its transcript row."""
         with self._lock:
@@ -236,6 +280,127 @@ class TranscriptStore:
                 (int(transcript_id),),
             )
             self._conn.commit()
+
+    # -- Corrections --------------------------------------------------------
+
+    def record_correction(
+        self,
+        *,
+        transcript_id: int,
+        source: str,
+        inserted: str,
+        corrected: str,
+        edit_distance: int,
+        words: int,
+        target_app: str | None = None,
+        ts_utc: str | None = None,
+    ) -> int:
+        """Persist one observed correction.
+
+        Callers must have already run the diff through
+        `corrections.looks_like_correction()`. This method stores what it is
+        given — the judgement about whether an edit *is* a correction belongs
+        in one place, and that place is the pure module.
+        """
+        ts = ts_utc or datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z')
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO corrections
+                  (transcript_id, ts_utc, source, inserted, corrected,
+                   edit_distance, words, target_app)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(transcript_id),
+                    ts,
+                    source,
+                    inserted,
+                    corrected,
+                    int(edit_distance),
+                    int(words),
+                    target_app,
+                ),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def mark_observed(self, transcript_id: int) -> None:
+        """Record that the read-back actually compared this insertion.
+
+        Called when the span was relocated and diffed — clean or not. An
+        insertion we could not read back is *unmeasured*, not perfect, and
+        must stay out of the denominator.
+        """
+        with self._lock:
+            self._conn.execute(
+                'UPDATE transcripts SET observed = 1 WHERE id = ?',
+                (int(transcript_id),),
+            )
+            self._conn.commit()
+
+    def corrections(
+        self, *, limit: int | None = 200, since: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Correction rows, newest first. `since` is an ISO timestamp bound."""
+        sql = 'SELECT * FROM corrections'
+        params: list[Any] = []
+        if since:
+            sql += ' WHERE ts_utc >= ?'
+            params.append(since)
+        sql += ' ORDER BY ts_utc DESC'
+        if limit is not None:
+            sql += ' LIMIT ?'
+            params.append(max(1, int(limit)))
+        with self._lock:
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+    def correction_summary(self, *, days: int = 30, today: date | None = None) -> dict[str, Any]:
+        """Correction rate over a window.
+
+        The denominator is every *successful insertion* in the window, not the
+        number of correction rows — the dictations the user never had to touch
+        are the whole point of the metric and they leave no row behind.
+        """
+        today = today or datetime.now(UTC).date()
+        cutoff = (
+            datetime.combine(today, datetime.min.time()) - timedelta(days=max(1, int(days)))
+        ).isoformat() + 'Z'
+        with self._lock:
+            # Only insertions the read-back actually compared. Counting every
+            # successful insertion would fold in the ones we never looked at
+            # — including every dictation from before this feature existed —
+            # and report them as clean.
+            insertions = int(self._conn.execute(
+                'SELECT COUNT(*) AS n FROM transcripts '
+                'WHERE success = 1 AND observed = 1 AND ts_utc >= ?',
+                (cutoff,),
+            ).fetchone()['n'])
+            # Every successful insertion in the window, measured or not. The
+            # gap between this and `insertions` is coverage: how much of what
+            # we typed we were actually able to check.
+            inserted_total = int(self._conn.execute(
+                'SELECT COUNT(*) AS n FROM transcripts WHERE success = 1 AND ts_utc >= ?',
+                (cutoff,),
+            ).fetchone()['n'])
+            rows = self._conn.execute(
+                'SELECT words, edit_distance FROM corrections WHERE ts_utc >= ?',
+                (cutoff,),
+            ).fetchall()
+
+        from corrections import summarise
+
+        rate = summarise([dict(r) for r in rows], insertions=insertions)
+        return {
+            'insertions': rate.insertions,
+            'inserted_total': inserted_total,
+            'corrected': rate.corrected,
+            'words': rate.words,
+            'edited_words': rate.edited_words,
+            'touch_rate': round(rate.touch_rate, 4),
+            'word_rate': round(rate.word_rate, 4),
+        }
 
     def audio_path_for(self, transcript_id: int) -> str | None:
         with self._lock:
@@ -369,11 +534,16 @@ class TranscriptStore:
             streak += 1
             cursor -= timedelta(days=1)
 
+        corr = self.correction_summary(days=30, today=today)
+
         return {
             'total_words': int(total),
             'wpm_30d': round(wpm_30d, 1),
             'streak_days': streak,
-            'fixes_count': 0,  # TODO: engine doesn't emit corrections yet.
+            'fixes_count': corr['corrected'],
+            'insertions_30d': corr['insertions'],
+            'correction_rate': corr['touch_rate'],
+            'correction_word_rate': corr['word_rate'],
             'words_this_month': words_30,
             'words_prev_month': words_prev,
             'transcript_count': self.count(),

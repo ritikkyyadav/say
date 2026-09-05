@@ -5,10 +5,11 @@ Endpoints:
   GET  /listener                     — hotkey listener status (kind, label, fell_back, perms)
   GET  /user/profile                 — first-name for the home greeting
   GET  /transcripts                  — reverse-chronological list, paginated
-  GET  /stats/summary                — totals, WPM, streak, monthly delta
+  GET  /stats/summary                — totals, WPM, streak, monthly delta, correction rate
   GET  /stats/desktop_usage          — per-app usage rollup
   GET  /stats/heatmap                — per-day count grid
   POST /transcripts/{id}/copy        — telemetry stub (no-op)
+  GET  /corrections                  — correction ledger + measured correction rate
   GET  /recordings                   — saved audio receipts (newest first)
   GET  /recordings/config            — save toggle + retention policy + totals
   POST /recordings/config            — update save toggle / retention (prunes)
@@ -27,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 import socket
 import sys
 import threading
@@ -50,6 +52,24 @@ class ActiveModelRequest(BaseModel):
     id: str
 
 
+class ProfileRequest(BaseModel):
+    """Body for POST /user/profile — both fields optional."""
+
+    first_name: str | None = None
+    onboarded: bool | None = None
+
+
+class OverlayConfigRequest(BaseModel):
+    """Body for POST /overlay — every field optional (partial update)."""
+
+    theme: str | None = None
+    colors: list[str] | None = None
+    pattern: str | None = None
+    show_overlay: bool | None = None
+    contrast: str | None = None
+    preview: bool | None = None
+
+
 class RecordingsConfigRequest(BaseModel):
     """Body for POST /recordings/config — all fields optional (partial update)."""
 
@@ -67,6 +87,11 @@ _ALLOWED_ORIGINS = [
     'http://localhost:1420',
     'http://127.0.0.1:1420',
 ]
+
+
+# A display name, not a field with a schema. Capped so a pathological value in
+# a hand-edited settings file cannot blow out the layout it is rendered into.
+_MAX_NAME_CHARS = 48
 
 
 def _user_first_name() -> str:
@@ -104,7 +129,10 @@ def _check_auth(app: FastAPI, request: Request) -> None:
         presented = presented.removeprefix('Bearer ').strip()
     else:
         presented = request.query_params.get('token', '') or ''
-    if presented != token:
+    # Constant-time: a plain `!=` leaks the token prefix through timing. The
+    # attacker has to be a local process already, so this is defence in depth
+    # rather than the load-bearing control — but it costs one import.
+    if not secrets.compare_digest(presented, token):
         raise HTTPException(status_code=401, detail='Bad or missing token')
 
 
@@ -149,7 +177,21 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
         get_bus().bind_loop(asyncio.get_running_loop())
         yield
 
-    app = FastAPI(title='Say', version='0.1.0', lifespan=lifespan)
+    app = FastAPI(
+        title='Say',
+        version='0.1.0',
+        lifespan=lifespan,
+        # FastAPI mounts /docs, /redoc and /openapi.json by default, all
+        # unauthenticated. Nothing here chose that. Two reasons to turn them
+        # off rather than shrug: an unauthenticated machine-readable index of
+        # every route is free reconnaissance for anything already running as
+        # this user, and Swagger UI fetches its own JavaScript from a CDN —
+        # so merely opening /docs would make this app perform the one thing
+        # it promises never to do.
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
     app.state.store = store if store is not None else get_store()
     app.state.auth_token = auth_token
 
@@ -186,7 +228,32 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
     @app.get('/user/profile')
     async def user_profile(request: Request) -> dict[str, Any]:
         _check_auth(app, request)
-        return {'first_name': _user_first_name()}
+        import config
+
+        chosen = str(getattr(config, 'USER_NAME', '') or '').strip()
+        return {
+            # What you asked to be called wins over what the OS thinks your
+            # account is named. Neither leaves this machine.
+            'first_name': chosen or _user_first_name(),
+            'onboarded': bool(getattr(config, 'ONBOARDED', False)),
+        }
+
+    @app.post('/user/profile')
+    async def set_user_profile(request: Request, body: ProfileRequest) -> dict[str, Any]:
+        _check_auth(app, request)
+        import settings as settings_mod
+
+        if body.first_name is not None:
+            # Trimmed and length-capped before it is written: this string is
+            # rendered straight into the greeting, and a settings file is a
+            # place a person can edit by hand.
+            name = ' '.join(body.first_name.split())[:_MAX_NAME_CHARS]
+            settings_mod.set_value('USER_NAME', name)
+
+        if body.onboarded is not None:
+            settings_mod.set_value('ONBOARDED', bool(body.onboarded))
+
+        return await user_profile(request)
 
     @app.get('/transcripts')
     async def list_transcripts(
@@ -196,7 +263,24 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
     ) -> list[dict[str, Any]]:
         _check_auth(app, request)
         rows = app.state.store.list(limit=limit, before=before)
-        return [r.to_dict() for r in rows]
+        store = app.state.store
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = row.to_dict()
+            # The transcripts feed carries its own playback, so it needs to
+            # know which rows actually have a clip behind them. Saving audio is
+            # opt-in, so for most people this is False everywhere.
+            #
+            # The path being *recorded* is not enough: retention sweeps and
+            # manual deletes remove the file and leave the column set, and a
+            # play button that 404s is worse than no play button.
+            try:
+                path = store.audio_path_for(row.id)
+                item['has_audio'] = bool(path) and os.path.exists(path)
+            except Exception:
+                item['has_audio'] = False
+            out.append(item)
+        return out
 
     @app.get('/stats/summary')
     async def stats_summary(request: Request) -> dict[str, Any]:
@@ -218,6 +302,143 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
     ) -> list[dict[str, Any]]:
         _check_auth(app, request)
         return app.state.store.heatmap(days=days)
+
+    @app.get('/stats/vocabulary')
+    def stats_vocabulary(
+        request: Request,
+        limit: int = Query(2000, ge=1, le=20000),
+    ) -> dict[str, Any]:
+        """Which words this person actually uses, and what that says about them.
+
+        **Deliberately `def`, not `async def`.** This is the only genuinely
+        CPU-bound endpoint in the app — measured, it is 220 ms over a real
+        344-dictation corpus and 12.7 s at the limit this route allows. On the
+        event loop that would not merely be slow, it would hold up *every*
+        other request for the duration: `/health`, the SSE stream the UI reads
+        its recording state from, everything. A sync endpoint is handed to
+        Starlette's threadpool instead, so a heavy analysis costs one worker
+        and nothing else notices.
+
+        Recomputed rather than stored, because the extraction rules keep
+        improving and a cached report would freeze today's rules over
+        yesterday's transcripts — but memoised on the corpus it was computed
+        from, so re-opening Home does not pay for it twice.
+        """
+        _check_auth(app, request)
+        import vocabulary
+
+        rows = app.state.store.list(limit=limit)
+        # Cheap identity for "the same corpus": how many rows and the newest
+        # id. Any new dictation changes one of them.
+        key = (limit, len(rows), rows[0].id if rows else 0)
+        cached = getattr(app.state, 'vocab_cache', None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+
+        try:
+            report = vocabulary.analyse(r.to_dict() for r in rows).to_dict()
+        except Exception:
+            _log.exception('Vocabulary analysis failed')
+            raise HTTPException(status_code=500, detail='Could not analyse vocabulary')
+
+        app.state.vocab_cache = (key, report)
+        return report
+
+    # ── Overlay appearance ───────────────────────────────────────────────
+
+    @app.get('/overlay')
+    async def get_overlay(request: Request) -> dict[str, Any]:
+        _check_auth(app, request)
+        import config
+        import overlay_theme
+
+        return {
+            'theme': getattr(config, 'OVERLAY_THEME', 'ink'),
+            'colors': list(getattr(config, 'OVERLAY_CUSTOM_COLORS', []) or []),
+            'pattern': getattr(config, 'OVERLAY_PATTERN', overlay_theme.DEFAULT_PATTERN),
+            'patterns': [dict(p) for p in overlay_theme.PATTERN_INFO],
+            'show_overlay': bool(getattr(config, 'SHOW_OVERLAY', True)),
+            'contrast': getattr(config, 'OVERLAY_CONTRAST', 'auto'),
+            'max_colors': overlay_theme.MAX_COLORS,
+            'presets': [overlay_theme.to_dict(t) for t in overlay_theme.catalog()],
+        }
+
+    @app.post('/overlay')
+    async def set_overlay(request: Request, body: OverlayConfigRequest) -> dict[str, Any]:
+        _check_auth(app, request)
+        import config
+        import overlay_theme
+        import settings as settings_mod
+
+        if body.colors is not None:
+            try:
+                colors = overlay_theme.clean_colors(body.colors)
+            except overlay_theme.BadColor as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            settings_mod.set_value('OVERLAY_CUSTOM_COLORS', colors)
+
+        if body.theme is not None:
+            theme = body.theme.strip().lower()
+            if theme not in overlay_theme.VALID_THEME_IDS:
+                raise HTTPException(status_code=400, detail=f'Unknown overlay theme: {theme}')
+            stored = list(getattr(config, 'OVERLAY_CUSTOM_COLORS', []) or [])
+            if theme == overlay_theme.CUSTOM_ID and not stored:
+                raise HTTPException(
+                    status_code=400,
+                    detail='Pick at least one colour before switching to a custom overlay.',
+                )
+            settings_mod.set_value('OVERLAY_THEME', theme)
+
+        if body.pattern is not None:
+            pattern = body.pattern.strip().lower()
+            if pattern not in overlay_theme.VALID_PATTERNS:
+                raise HTTPException(
+                    status_code=400, detail=f'Unknown overlay pattern: {pattern}'
+                )
+            settings_mod.set_value('OVERLAY_PATTERN', pattern)
+
+        if body.contrast is not None:
+            valid = getattr(config, 'VALID_OVERLAY_CONTRAST', set())
+            if valid and body.contrast not in valid:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f'contrast must be one of: {", ".join(sorted(valid))}',
+                )
+            settings_mod.set_value('OVERLAY_CONTRAST', body.contrast)
+
+        if body.show_overlay is not None:
+            settings_mod.set_value('SHOW_OVERLAY', bool(body.show_overlay))
+
+        # Repaint the running glyph. Best-effort by design: the settings are
+        # already saved, and an overlay that cannot be reached (no run loop, a
+        # headless test) must not turn a successful save into a 500.
+        overlay = overlay_theme.live_overlay()
+        if overlay is not None:
+            try:
+                overlay.set_theme()
+                if body.preview and getattr(config, 'SHOW_OVERLAY', True):
+                    overlay.preview()
+            except Exception:
+                _log.debug('Could not repaint the live overlay', exc_info=True)
+
+        return await get_overlay(request)
+
+    @app.post('/overlay/preview')
+    async def preview_overlay(request: Request) -> dict[str, Any]:
+        """Flash the real glyph on screen so a colour can be judged in place."""
+        _check_auth(app, request)
+        import overlay_theme
+
+        overlay = overlay_theme.live_overlay()
+        if overlay is None:
+            return {'shown': False, 'reason': 'no overlay in this process'}
+        try:
+            overlay.set_theme()
+            overlay.preview()
+            return {'shown': True}
+        except Exception:
+            _log.debug('Overlay preview failed', exc_info=True)
+            return {'shown': False, 'reason': 'overlay unavailable'}
 
     @app.post('/transcripts/{transcript_id}/copy', status_code=status.HTTP_204_NO_CONTENT)
     async def copy_transcript(transcript_id: int, request: Request) -> Response:
@@ -281,6 +502,26 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
         return {}
 
     # ── Recordings (audio receipts) ──────────────────────────────────────
+
+    @app.get('/corrections')
+    async def list_corrections(
+        request: Request,
+        limit: int = Query(200, ge=1, le=2000),
+    ) -> dict[str, Any]:
+        """The correction ledger + the rate derived from it.
+
+        Every layer between the mic and the document is a bet about what the
+        user meant; this is the only place that says whether the bets are
+        paying off. Exposed as an endpoint (not just a stat) because a
+        correction that was silently never captured and one that was captured
+        and found clean look identical from the summary alone.
+        """
+        _check_auth(app, request)
+        store = app.state.store
+        return {
+            'summary': store.correction_summary(),
+            'corrections': store.corrections(limit=limit),
+        }
 
     @app.get('/recordings')
     async def list_recordings(
@@ -392,15 +633,22 @@ def _pick_free_port() -> int:
         return int(s.getsockname()[1])
 
 
-def serve_blocking(*, host: str = '127.0.0.1', port: int | None = None, log_level: str = 'warning') -> None:
+def serve_blocking(
+    *,
+    host: str = '127.0.0.1',
+    port: int | None = None,
+    log_level: str = 'warning',
+    owner_pid: int | None = None,
+) -> None:
     """Boot the API and block. Returns when uvicorn shuts down.
 
-    Writes `runtime.json` so the desktop shell can find the port.
+    Writes `runtime.json` so the desktop shell can find the port — and, when
+    this engine was launched as a sidecar, which shell it belongs to.
     """
     import uvicorn
 
     chosen_port = port if port is not None else _pick_free_port()
-    info = write_runtime(chosen_port)
+    info = write_runtime(chosen_port, owner_pid=owner_pid)
     app = create_app(auth_token=info['token'])
 
     config = uvicorn.Config(

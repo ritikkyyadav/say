@@ -37,6 +37,49 @@ def validate_config(cfg: ModuleType = config) -> list[str]:
             f'INJECT_METHOD must be one of: {", ".join(sorted(valid_inject_methods))}.'
         )
 
+    overlay_contrast = getattr(cfg, 'OVERLAY_CONTRAST', 'auto')
+    valid_contrast = getattr(cfg, 'VALID_OVERLAY_CONTRAST', set())
+    if valid_contrast and overlay_contrast not in valid_contrast:
+        errors.append(
+            f'OVERLAY_CONTRAST must be one of: {", ".join(sorted(valid_contrast))}.'
+        )
+
+    theme = getattr(cfg, 'OVERLAY_THEME', 'ink')
+    try:
+        import overlay_theme
+    except Exception:
+        overlay_theme = None  # type: ignore[assignment]
+    if overlay_theme is not None:
+        if theme not in overlay_theme.VALID_THEME_IDS:
+            errors.append(
+                'OVERLAY_THEME must be one of: '
+                f'{", ".join(sorted(overlay_theme.VALID_THEME_IDS))}.'
+            )
+        pattern = getattr(cfg, 'OVERLAY_PATTERN', overlay_theme.DEFAULT_PATTERN)
+        if pattern not in overlay_theme.VALID_PATTERNS:
+            errors.append(
+                'OVERLAY_PATTERN must be one of: '
+                f'{", ".join(sorted(overlay_theme.VALID_PATTERNS))}.'
+            )
+
+        custom = getattr(cfg, 'OVERLAY_CUSTOM_COLORS', []) or []
+        if not isinstance(custom, list):
+            errors.append('OVERLAY_CUSTOM_COLORS must be a list of hex colours.')
+        else:
+            for value in custom:
+                try:
+                    overlay_theme.parse_hex(str(value))
+                except overlay_theme.BadColor:
+                    errors.append(
+                        f'OVERLAY_CUSTOM_COLORS contains {value!r}, which is not '
+                        'a hex colour like #D9713F.'
+                    )
+                    break
+            if theme == overlay_theme.CUSTOM_ID and not custom:
+                errors.append(
+                    "OVERLAY_THEME is 'custom' but OVERLAY_CUSTOM_COLORS is empty."
+                )
+
     sample_rate = getattr(cfg, 'SAMPLE_RATE', None)
     if not isinstance(sample_rate, int) or sample_rate <= 0:
         errors.append('SAMPLE_RATE must be a positive integer.')

@@ -109,6 +109,35 @@ def _normalize_for_filter(text: str) -> str:
     return text.lower().strip().strip(_FILTER_STRIP).strip()
 
 
+# Below this much audio, the style seed is dropped from the decoder prompt.
+# Two sentences of text prior against a fraction of a second of sound is a
+# contest the audio loses: the decoder follows the prompt and loops. Long
+# enough clips have plenty of acoustic evidence and benefit from the seed.
+_STYLE_SEED_MIN_SECONDS = 2.0
+
+
+def _asr_prompt(audio_seconds: float | None = None) -> str:
+    """Decoder bias string: style seed + user vocabulary + user prompt.
+
+    Imported lazily so `postprocess` stays an optional collaborator and a
+    failure there can never stop a transcription from happening.
+
+    `audio_seconds` lets the prompt scale to the clip: short recordings get the
+    vocabulary but not the style seed, because a strong text prior with almost
+    no audio behind it is what drives the decoder into a repetition loop.
+    """
+    try:
+        import postprocess
+
+        include_seed = (
+            audio_seconds is None or audio_seconds >= _STYLE_SEED_MIN_SECONDS
+        )
+        return postprocess.asr_prompt(include_style_seed=include_seed)
+    except Exception:
+        _log.exception('asr_prompt() failed; falling back to the raw user prompt')
+        return (getattr(config, 'INITIAL_PROMPT', '') or '').strip()
+
+
 def _build_active_filter(language: str | None) -> set[str]:
     base = set(_HALLUCINATION_FILTER['language_neutral'])
     if language:
@@ -337,11 +366,16 @@ class Transcriber:
             self._loaded = False
             self._backend = None
 
-    def transcribe(self, audio) -> str:
+    def transcribe(self, audio, prompt_override: str | None = None) -> str:
         """Transcribe an audio buffer to text.
 
         Returns an empty string if the audio is too short or the
         transcription matches a known hallucination phrase.
+
+        `prompt_override` replaces the decoder bias string for this call only.
+        Streaming mode uses it to hand each segment the tail of the previous
+        segment's text, rebuilding the cross-window conditioning that splitting
+        a clip into separate decoder calls would otherwise destroy.
         """
         if not self._loaded:
             self.load()
@@ -353,23 +387,39 @@ class Transcriber:
         if self._backend == 'moonshine':
             text = self._transcribe_moonshine(audio)
         else:
-            text = self._transcribe_whisper(audio)
+            text = self._transcribe_whisper(audio, prompt_override=prompt_override)
 
         active_filter = _build_active_filter(config.LANGUAGE)
         if _normalize_for_filter(text) in active_filter:
             return ''
         return text
 
-    def _transcribe_whisper(self, audio) -> str:
+    def _transcribe_whisper(self, audio, prompt_override: str | None = None) -> str:
         t0 = time.time()
         kwargs = {
             'path_or_hf_repo': getattr(self, '_resolved_path', self._model_path),
             'fp16': True,
+            # Whisper decodes in 30-second windows and, when conditioning is on,
+            # prompts each window with the previous window's output. That carries
+            # style as well as terminology, so one unpunctuated window cascades
+            # through the rest of a long dictation. See config.py for the details.
+            'condition_on_previous_text': bool(
+                getattr(config, 'CONDITION_ON_PREVIOUS_TEXT', False)
+            ),
         }
         if config.LANGUAGE:
             kwargs['language'] = config.LANGUAGE
-        if config.INITIAL_PROMPT:
-            kwargs['initial_prompt'] = config.INITIAL_PROMPT
+
+        # Style seed + user vocabulary + user prompt, assembled in one place.
+        # The prompt scales with the clip — see `_asr_prompt`.
+        audio_seconds = len(audio) / float(config.SAMPLE_RATE)
+        prompt = (
+            prompt_override
+            if prompt_override is not None
+            else _asr_prompt(audio_seconds)
+        )
+        if prompt:
+            kwargs['initial_prompt'] = prompt
 
         result = self._mlx_whisper.transcribe(audio, **kwargs)
         text = result.get('text', '').strip()

@@ -2,6 +2,9 @@
 
 import unittest
 
+import config
+import transcriber
+
 
 class HallucinationFilterTests(unittest.TestCase):
     def test_english_filter_includes_known_phrases(self):
@@ -71,3 +74,86 @@ class TranscriberApiTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class WhisperDecodeOptionsTests(unittest.TestCase):
+    """The decoder kwargs are the whole punctuation fix — assert them explicitly.
+
+    Measured on real dictations (say/tools/replay_bench.py): a well-punctuated
+    `initial_prompt` takes unpunctuated transcripts from 58.3% to 0% and lifts
+    sentence density from 0.85 to 5.75 per 100 words. Disabling
+    `condition_on_previous_text` does NOT help — it drops density to 2.44 by
+    discarding cross-window context. These tests pin both so a refactor cannot
+    silently undo the fix.
+    """
+
+    def setUp(self):
+        self._saved = {
+            k: getattr(config, k, None)
+            for k in ('CONDITION_ON_PREVIOUS_TEXT', 'STYLE_SEED_ENABLED',
+                      'DICTIONARY', 'INITIAL_PROMPT', 'LANGUAGE')
+        }
+        config.CONDITION_ON_PREVIOUS_TEXT = False
+        config.STYLE_SEED_ENABLED = True
+        config.DICTIONARY = []
+        config.INITIAL_PROMPT = ''
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            setattr(config, k, v)
+
+    def _capture_kwargs(self, seconds: float = 8.0):
+        """Run a fake decode and return the kwargs it was handed.
+
+        Defaults to a clip long enough to earn the style seed. Short clips
+        deliberately get a reduced prompt — see
+        `test_short_clips_do_not_get_the_style_seed`.
+        """
+        captured = {}
+
+        class _FakeMLX:
+            @staticmethod
+            def transcribe(audio, **kwargs):
+                captured.update(kwargs)
+                return {'text': 'hello world'}
+
+        t = transcriber.Transcriber('mlx-community/whisper-small-mlx')
+        t._mlx_whisper = _FakeMLX
+        t._resolved_path = 'mlx-community/whisper-small-mlx'
+        t._transcribe_whisper([0.0] * int(16000 * seconds))
+        return captured
+
+    def test_conditioning_follows_config(self):
+        self.assertFalse(self._capture_kwargs()['condition_on_previous_text'])
+        config.CONDITION_ON_PREVIOUS_TEXT = True
+        self.assertTrue(self._capture_kwargs()['condition_on_previous_text'])
+
+    def test_shipped_default_keeps_conditioning_on(self):
+        """Regression guard: the measured best config seeds the style AND keeps
+        conditioning enabled. Turning it off looks intuitive and is worse."""
+        # _saved holds the values captured before setUp overrode them, i.e.
+        # exactly what config.py ships.
+        self.assertTrue(self._saved['CONDITION_ON_PREVIOUS_TEXT'])
+        self.assertTrue(self._saved['STYLE_SEED_ENABLED'])
+
+    def test_style_seed_is_passed_as_initial_prompt(self):
+        prompt = self._capture_kwargs().get('initial_prompt', '')
+        self.assertIn('full stops', prompt)
+
+    def test_dictionary_terms_reach_the_decoder(self):
+        config.DICTIONARY = ['Claude Code']
+        self.assertIn('Claude Code', self._capture_kwargs().get('initial_prompt', ''))
+
+    def test_no_prompt_key_when_everything_is_disabled(self):
+        config.STYLE_SEED_ENABLED = False
+        self.assertNotIn('initial_prompt', self._capture_kwargs())
+
+    def test_short_clips_do_not_get_the_style_seed(self):
+        """A strong text prior with almost no audio behind it makes the
+        decoder follow the prompt and loop. A 0.63 s clip once produced 222
+        words of 'available'. Vocabulary still goes through — it is a short
+        comma list, not two sentences of prose."""
+        config.DICTIONARY = ['Claude Code']
+        prompt = self._capture_kwargs(seconds=0.6).get('initial_prompt', '')
+        self.assertNotIn('full stops', prompt)
+        self.assertIn('Claude Code', prompt)

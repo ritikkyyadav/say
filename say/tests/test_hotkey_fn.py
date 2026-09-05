@@ -74,6 +74,40 @@ class FnHotkeyStateMachineTests(unittest.TestCase):
         listener._handle_fn_down()
         self.assertTrue(self._wait_for(events, 'stop', timeout=1.0))
 
+    def test_space_after_ptt_converts_to_hands_free(self):
+        """The deliberate 'hold Fn, then tap Space' gesture must work even
+        after the PENDING window has lapsed and push-to-talk has begun —
+        this is the real-world path (a human can't reliably hit a <250ms
+        chord), and the one that was silently falling back to push-to-talk.
+        """
+        listener, events = self._make()
+        import hotkey_fn
+
+        original = hotkey_fn._PENDING_TIMEOUT
+        hotkey_fn._PENDING_TIMEOUT = 0.05
+        try:
+            listener._handle_fn_down()
+            # Let the pending window lapse → push-to-talk begins.
+            self.assertTrue(self._wait_for(events, 'start', timeout=1.0))
+            self.assertEqual(listener.mode, 'ptt')
+
+            # Now tap Space with Fn still held → convert to hands-free,
+            # WITHOUT starting a second recording.
+            listener._handle_space_down()
+            self.assertEqual(listener.mode, 'hands_free')
+            self.assertEqual(events.count('start'), 1)
+
+            # Releasing Fn no longer stops (hands-free semantics).
+            listener._handle_fn_up()
+            time.sleep(0.05)
+            self.assertNotIn('stop', events)
+
+            # Pressing Fn again stops & transcribes.
+            listener._handle_fn_down()
+            self.assertTrue(self._wait_for(events, 'stop', timeout=1.0))
+        finally:
+            hotkey_fn._PENDING_TIMEOUT = original
+
     def test_escape_cancels(self):
         listener, events = self._make()
         import hotkey_fn
@@ -104,6 +138,231 @@ class FnHotkeyStateMachineTests(unittest.TestCase):
         finally:
             hotkey_fn._PENDING_TIMEOUT = original
 
+    def test_fn_arrow_chord_does_not_start_a_dictation(self):
+        """Regression: Fn+arrow (Home/End/PageUp/Down) fired a real recording.
+
+        Holding Fn past the pending window used to fall through to push-to-talk
+        regardless of what else was pressed, so navigating a document with
+        Fn+arrows opened the mic and transcribed the room — text that could then
+        be injected into the focused app.
+        """
+        listener, events = self._make()
+        import hotkey_fn
+
+        original = hotkey_fn._PENDING_TIMEOUT
+        hotkey_fn._PENDING_TIMEOUT = 0.05
+        try:
+            listener._handle_fn_down()
+            # Down-arrow while Fn is held — an ordinary Page Down.
+            listener._handle_other_key()
+            self.assertEqual(listener.mode, 'idle')
+            # Let the old pending window elapse; nothing may start.
+            time.sleep(0.12)
+            listener._handle_fn_up()
+            time.sleep(0.05)
+            self.assertNotIn('start', events)
+            self.assertNotIn('stop', events)
+        finally:
+            hotkey_fn._PENDING_TIMEOUT = original
+
+    def test_key_during_push_to_talk_cancels_and_discards(self):
+        """If PTT already began, an ordinary chord must cancel, not transcribe."""
+        listener, events = self._make()
+        import hotkey_fn
+
+        original = hotkey_fn._PENDING_TIMEOUT
+        hotkey_fn._PENDING_TIMEOUT = 0.05
+        try:
+            listener._handle_fn_down()
+            self.assertTrue(self._wait_for(events, 'start', timeout=1.0))
+            listener._handle_other_key()
+            self.assertTrue(self._wait_for(events, 'cancel', timeout=1.0))
+            self.assertEqual(listener.mode, 'idle')
+            # Releasing Fn afterwards must not transcribe.
+            listener._handle_fn_up()
+            time.sleep(0.05)
+            self.assertNotIn('stop', events)
+        finally:
+            hotkey_fn._PENDING_TIMEOUT = original
+
+    def test_hands_free_survives_typing(self):
+        """Hands-free was latched deliberately — typing must not cancel it."""
+        listener, events = self._make()
+        listener._handle_fn_down()
+        listener._handle_space_down()
+        self.assertEqual(listener.mode, 'hands_free')
+        listener._handle_other_key()
+        self.assertEqual(listener.mode, 'hands_free')
+        self.assertNotIn('cancel', events)
+
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TapOutageRecoveryTests(unittest.TestCase):
+    """A disabled-and-re-enabled event tap must not strand a live gesture.
+
+    macOS disables the tap on callback timeout / certain user input and
+    delivers nothing until it is re-enabled. A release inside that window is
+    lost, so without an explicit hardware resync the listener stays stuck in
+    PUSH_TO_TALK: the clip never stops and every later Fn press is refused as
+    "already recording" — dictation dead until relaunch.
+    """
+
+    def _make(self):
+        from hotkey_fn import FnHotkeyListener
+
+        events = []
+
+        def cb(name):
+            def fn():
+                events.append(name)
+            return fn
+
+        listener = FnHotkeyListener(
+            on_start_cb=cb('start'),
+            on_stop_cb=cb('stop'),
+            on_cancel_cb=cb('cancel'),
+            on_arm_cb=cb('arm'),
+            on_disarm_cb=cb('disarm'),
+        )
+        return listener, events
+
+    def _wait_for(self, events, name, timeout=1.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if name in events:
+                return True
+            time.sleep(0.01)
+        return False
+
+    def _enter_ptt(self, listener):
+        import hotkey_fn
+
+        original = hotkey_fn._PENDING_TIMEOUT
+        hotkey_fn._PENDING_TIMEOUT = 0.02
+        try:
+            listener._handle_fn_down()
+            deadline = time.time() + 1.0
+            while time.time() < deadline and listener.mode != 'ptt':
+                time.sleep(0.01)
+        finally:
+            hotkey_fn._PENDING_TIMEOUT = original
+        self.assertEqual(listener.mode, 'ptt')
+
+    def test_release_missed_during_outage_stops_the_recording(self):
+        listener, events = self._make()
+        self._enter_ptt(listener)
+        self.assertTrue(self._wait_for(events, 'start'))
+
+        # The user let go of Fn while the tap was dead: hardware says "up",
+        # but no flagsChanged was ever delivered.
+        listener._fn_physically_down = lambda: False
+        listener._resync_after_tap_outage()
+
+        self.assertTrue(self._wait_for(events, 'stop'), 'recording was never stopped')
+        self.assertEqual(listener.mode, 'idle')
+        self.assertFalse(listener.is_recording)
+
+    def test_a_still_held_key_is_left_recording(self):
+        listener, events = self._make()
+        self._enter_ptt(listener)
+        self.assertTrue(self._wait_for(events, 'start'))
+
+        # Fn genuinely still held — the outage was incidental. Stopping here
+        # would truncate the user mid-sentence.
+        listener._fn_physically_down = lambda: True
+        listener._resync_after_tap_outage()
+
+        time.sleep(0.05)
+        self.assertNotIn('stop', events)
+        self.assertEqual(listener.mode, 'ptt')
+        self.assertTrue(listener.is_recording)
+
+    def test_unreadable_hardware_state_changes_nothing(self):
+        listener, events = self._make()
+        self._enter_ptt(listener)
+        self.assertTrue(self._wait_for(events, 'start'))
+
+        # Cannot read the flags → do not guess; a spurious read must never
+        # cancel a live recording.
+        listener._fn_physically_down = lambda: None
+        listener._resync_after_tap_outage()
+
+        time.sleep(0.05)
+        self.assertNotIn('stop', events)
+        self.assertEqual(listener.mode, 'ptt')
+
+    def test_pending_gesture_is_disarmed_not_recorded(self):
+        listener, events = self._make()
+        listener._handle_fn_down()          # PENDING — mic armed, not recording
+        self.assertEqual(listener.mode, 'pending')
+
+        listener._fn_physically_down = lambda: False
+        listener._resync_after_tap_outage()
+
+        self.assertTrue(self._wait_for(events, 'disarm'), 'armed mic was never released')
+        self.assertNotIn('start', events)
+        self.assertEqual(listener.mode, 'idle')
+
+    def test_idle_listener_is_untouched(self):
+        listener, events = self._make()
+        listener._fn_physically_down = lambda: False
+        listener._resync_after_tap_outage()
+
+        time.sleep(0.05)
+        self.assertEqual(events, [])
+        self.assertEqual(listener.mode, 'idle')
+
+
+class TapDisabledEventWiringTests(unittest.TestCase):
+    """The recovery must hang off the real tap-disabled event, not just exist.
+
+    `_event_callback` imports Quartz lazily, so a stub in sys.modules is
+    enough to drive the disabled branch without a real CGEventTap.
+    """
+
+    def _fake_quartz(self):
+        import types
+
+        q = types.ModuleType('Quartz')
+        q.kCGEventTapDisabledByTimeout = 0xFFFFFFFE
+        q.kCGEventTapDisabledByUserInput = 0xFFFFFFFF
+        q.kCGEventFlagsChanged = 12
+        q.kCGEventKeyDown = 10
+        q.enabled = []
+        q.CGEventTapEnable = lambda tap, on: q.enabled.append((tap, on))
+        return q
+
+    def test_disabled_event_reenables_the_tap_and_resyncs(self):
+        import sys
+
+        from hotkey_fn import FnHotkeyListener
+
+        listener = FnHotkeyListener(
+            on_start_cb=lambda: None,
+            on_stop_cb=lambda: None,
+        )
+        listener._tap = object()
+        calls = []
+        listener._resync_after_tap_outage = lambda: calls.append('resync')
+
+        q = self._fake_quartz()
+        saved = sys.modules.get('Quartz')
+        sys.modules['Quartz'] = q
+        try:
+            for kind in (q.kCGEventTapDisabledByTimeout, q.kCGEventTapDisabledByUserInput):
+                del calls[:]
+                del q.enabled[:]
+                out = listener._event_callback(None, kind, 'evt', None)
+                self.assertEqual(out, 'evt', 'the event must still propagate')
+                self.assertEqual(
+                    [on for _, on in q.enabled], [True], 'tap was not re-enabled'
+                )
+                self.assertEqual(calls, ['resync'], 'state was never reconciled')
+        finally:
+            if saved is not None:
+                sys.modules['Quartz'] = saved
+            else:
+                sys.modules.pop('Quartz', None)

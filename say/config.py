@@ -64,10 +64,11 @@ MIN_AUDIO_SECONDS = 0.4        # Shorter clips are ignored
 # is prepended to the recording. Eliminates first-syllable clipping
 # caused by hotkey debounce + reaction time.
 #
-# When > 0, the microphone stream stays open between recordings so the
-# ring buffer can keep filling. The macOS mic-active LED is your honest
-# indicator that the stream is live — no audio is written to disk and
-# the buffer is in-memory only. Set to 0 to disable pre-roll.
+# When > 0, the hotkey listener calls `recorder.arm()` the instant the trigger
+# key goes down, which opens the mic and starts filling the ring buffer *before*
+# the tap-vs-hold window resolves. The mic stays closed while idle, so the macOS
+# mic-active LED remains an honest indicator. No audio is written to disk and the
+# buffer is in-memory only. Set to 0 to disable pre-roll (and arming).
 PRE_ROLL_SECONDS = 0.5
 
 # Polling interval for the input-device-change watcher (e.g. AirPods
@@ -88,21 +89,139 @@ INJECT_METHOD = 'auto'
 VALID_INJECT_METHODS = {'auto', 'accessibility', 'clipboard'}
 
 # -- Custom Vocabulary / Prompt -------------------------------
-# Whisper's initial_prompt biases transcription toward these terms.
-# Useful for domain-specific jargon. Keep under 100 tokens.
-# Empty / None = no bias. Users can override via Settings (Phase 6) or
-# by editing this file directly.
+# Extra text prepended to the decoder's context. Combined with the built-in
+# style seed and DICTIONARY terms by `postprocess.asr_prompt()`; this constant
+# holds only what the *user* added. Keep the total under ~100 tokens.
 INITIAL_PROMPT = ''
+
+# -- Transcript auto-correction -------------------------------
+# Deterministic clean-up applied between transcription and injection
+# (see postprocess.py). Rule-based and effectively free — no model runs.
+AUTO_CORRECT = True                 # master switch for the whole stage
+AUTO_CAPITALISE = True              # sentence-start capitals, standalone "I"
+AUTO_TERMINAL_PUNCTUATION = True    # add a full stop when the last sentence lacks one
+
+# Vocabulary the acoustic model tends to mishear. Used twice: fed to the
+# decoder as bias *before* transcription, and used to repair near-misses
+# *after* it ("cloud code" -> "Claude Code"). Multi-word entries are much
+# safer to fuzzy-match than single words — prefer them.
+DICTIONARY: list[str] = []
+
+# Literal, whole-word substitutions applied before fuzzy matching. Use this
+# when a term is mangled in a way phonetic matching won't catch.
+DICTIONARY_REPLACEMENTS: dict[str, str] = {}
+
+# -- Learning from corrections --------------------------------
+# Every layer between the microphone and the document is a bet about what you
+# meant. This is the scorecard: a few seconds after Say types, it reads the
+# field back and diffs it against what it inserted, so "how often did the user
+# still have to fix it" becomes a measured number instead of a guess.
+#
+# It rides the Accessibility grant injection already requires — nothing extra
+# is requested — and it only ever looks at the element Say just wrote into,
+# inside a window it opened itself. Only Say's own span and what that span
+# became are stored; the surrounding document is used to locate the span and
+# is then dropped. See readback.py for the full contract.
+LEARN_FROM_CORRECTIONS = True
+
+# How long to wait before reading back. Long enough for a fix to have happened,
+# short enough that the field usually still exists.
+CORRECTION_READBACK_DELAY_S = 8.0
+
+# -- Streaming transcription ----------------------------------
+# Decode the recording in segments *while* the user is still speaking, cutting
+# only inside natural pauses, so at hotkey-release just the final segment is
+# outstanding. Without it the wait scales with how long you talked (measured
+# p90: 17.7 s); with it the wait is roughly constant regardless of length.
+#
+# Segments carry the tail of the previous segment's text into the next one's
+# prompt (see streaming.carry_over_prompt) — separate decoder calls would
+# otherwise lose the cross-window context that produces sentence structure.
+#
+# Falls back to whole-clip transcription automatically if anything goes wrong.
+STREAMING_TRANSCRIPTION = True
+
+# -- Decoder behaviour (Whisper backends) ---------------------
+# Whisper transcribes in 30-second windows and, with conditioning ON, feeds
+# each window's output into the next as context. That propagates *style* as
+# well as terminology — which is why an unpunctuated first window used to make
+# the whole dictation unpunctuated.
+#
+# The fix is NOT to disable conditioning. Measured on a 24-clip sample of real
+# dictations (say/tools/replay_bench.py):
+#
+#   config        unpunctuated   sentences/100w   (prose is 5-7)
+#   baseline           58.3%          0.85
+#   seed only           0.0%          5.75   <- shipped
+#   nocond only        45.8%          1.23
+#   seed + nocond       0.0%          2.44
+#
+# Conditioning was never the problem; the *absence of a style seed* was. Given
+# a well-punctuated seed, conditioning faithfully propagates the good style and
+# produces normal sentence structure. Disabling it also throws away the
+# cross-window context, which more than halves sentence density.
+STYLE_SEED_ENABLED = True
+CONDITION_ON_PREVIOUS_TEXT = True
+
+# -- Overlay ---------------------------------------------------
+# The floating dictation glyph: a small mark at the bottom of the screen that
+# appears the instant the trigger key goes down and draws the live spectrum of
+# what the microphone is hearing (see overlay.py / waveform.py).
+#
+# It is feedback only — it never takes focus, never accepts a click, and is
+# built once at launch so showing it costs nothing. Set False to dictate with
+# no on-screen indicator at all.
+SHOW_OVERLAY = True
+
+# How the glyph keeps itself legible. The system appearance is a poor proxy for
+# what is actually behind the overlay — macOS in dark mode over a white web
+# page puts near-white ink on white — so by default the mark is drawn with a
+# thin rim in the opposite tone, the way subtitles are.
+#   'auto'    ink follows the system appearance, plus the contrast rim
+#   'system'  ink follows the system appearance, no rim
+#   'dark'    always dark ink with a light rim
+#   'light'   always light ink with a dark rim
+OVERLAY_CONTRAST = 'auto'
+VALID_OVERLAY_CONTRAST = {'auto', 'system', 'dark', 'light'}
+
+# The glyph's colours. A theme is a short list of colours cycled across the
+# twelve columns, so the mark can read as alternating slashes instead of one
+# solid silhouette. See `overlay_theme.py` for the catalogue.
+#
+# 'ink' is deliberately colourless: it means "follow the system appearance",
+# i.e. exactly the behaviour that shipped before themes existed, and it stays
+# the default so nobody's glyph changes underneath them. Any other preset, or
+# 'custom' with OVERLAY_CUSTOM_COLORS, paints the columns explicitly and
+# OVERLAY_CONTRAST no longer applies — a chosen colour is not adapted away.
+OVERLAY_THEME = 'ink'
+OVERLAY_CUSTOM_COLORS: list[str] = []
+
+# How those colours are distributed across the twelve columns. 'alternate' is
+# the plain stripe (column 0 colour A, column 1 colour B, …), which is a fixed
+# pattern that never changes; every other option derives the colour from the
+# live audio instead, so the row stays tightly synchronised — it is all one
+# spectrum — while never repeating. See overlay_theme.column_colors.
+#   'pulse'      colour follows each bar's own loudness  (default)
+#   'spark'      only the loudest bars take the second colour
+#   'flow'       a colour wave travelling the row
+#   'drift'      a fixed scatter that never lines up
+#   'alternate'  every other column
+OVERLAY_PATTERN = 'pulse'
+
+# -- Who you are ----------------------------------------------
+# What the app calls you, and whether the desktop onboarding has been
+# completed. Both live in the local settings file and are read by nothing but
+# this machine — there is no account, no telemetry and no network call
+# anywhere in the app. The one email this product asks for is collected on the
+# website at download time and never reaches the binary.
+USER_NAME = ''                 # blank = fall back to the OS account name
+ONBOARDED = False              # desktop first-run flow completed
 
 # -- Notifications --------------------------------------------
 SHOW_NOTIFICATIONS = True      # Show macOS notification on transcription complete
 
 # -- Menu Bar --------------------------------------------------
 MENU_BAR_ICON = '🎙'           # Emoji shown in the macOS menu bar
-
-# -- Overlay ---------------------------------------------------
-SHOW_OVERLAY = True            # Show floating waveform overlay during dictation
-OVERLAY_POSITION = 'bottom'    # 'bottom' or 'top' — screen position
 
 # -- Recordings (audio receipts) -------------------------------
 # When True, the raw audio of every successful dictation is saved as a WAV

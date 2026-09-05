@@ -268,7 +268,7 @@ class ModelManager:
     def _cleanup_partial(self, model_id: str) -> None:
         """Remove a half-written cache dir (after cancel) — cache-root guarded."""
         target, cache_root = self._storage_for(model_id)
-        if os.path.realpath(target).startswith(cache_root) and os.path.isdir(target):
+        if _inside(target, cache_root) and os.path.isdir(target):
             shutil.rmtree(target, ignore_errors=True)
 
     def _run_download(self, model_id: str) -> None:
@@ -365,7 +365,7 @@ class ModelManager:
 
         target, cache_root = self._storage_for(model_id)
         # Safety: only ever delete inside the model's own cache root.
-        if not os.path.realpath(target).startswith(cache_root):
+        if not _inside(target, cache_root):
             raise ValueError('Refusing to delete outside the model cache.')
         if os.path.isdir(target):
             shutil.rmtree(target, ignore_errors=True)
@@ -373,6 +373,29 @@ class ModelManager:
         with self._lock:
             self._status.pop(model_id, None)
 
+
+
+def _inside(path: str, root: str) -> bool:
+    """True when `path` really is under `root`.
+
+    `realpath(...).startswith(root)` is the obvious version and it is wrong:
+    it also matches a sibling that merely shares the prefix, so a root of
+    `~/.cache/moonshine` would happily authorise deleting
+    `~/.cache/moonshine-something-else`. Not reachable today — every id is
+    allowlisted against the catalogue by `is_known()` before it gets here —
+    but this is the guard that would have to hold if that ever stopped being
+    true, so it should actually hold.
+    """
+    try:
+        # Resolve *both* sides. On macOS the temp and cache directories are
+        # routinely symlinks (/var -> /private/var), so comparing a resolved
+        # path against an unresolved root reports "outside" for things that
+        # are plainly inside — a guard that fails closed on legitimate input
+        # is still a broken guard.
+        real_root = os.path.realpath(root)
+        return os.path.commonpath([os.path.realpath(path), real_root]) == real_root
+    except ValueError:
+        return False        # different drives / one is relative
 
 # ── Module singleton ─────────────────────────────────────────────────────
 

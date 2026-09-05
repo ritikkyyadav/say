@@ -1,4 +1,4 @@
-# Oceanus — App Icon Prompt (Savoir DNA)
+# Say — App Icon Prompt (Savoir DNA)
 
 Icon-only mark for the macOS dictation app, built on the Savoir brand system.
 Concept: **a waveform whose center bar is the Savoir block cursor** — voice + "a datum, set down."
@@ -56,5 +56,5 @@ Cream / warm tones · purple-blue AI gradients · glows or neon · drop shadows 
 ## Practical notes
 
 - Generate 4–6, pick the cleanest, then trace it to vector (Illustrator / Figma / `vectorizer.ai`) for a crisp `.icns` — DALL·E output is raster and slightly soft at icon sizes.
-- The icon is name-agnostic (no text), so it works whether the app reads as **Oceanus** or **Say**.
-- For the matching **wordmark** ("Oceanus" + teal block cursor) or a full lockup, ask and I'll generate that prompt too.
+- The icon is name-agnostic (no text), so it works whether the app reads as **Say** or **Say**.
+- For the matching **wordmark** ("Say" + teal block cursor) or a full lockup, ask and I'll generate that prompt too.

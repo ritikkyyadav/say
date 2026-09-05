@@ -63,39 +63,6 @@ fn open_privacy_settings(pane: String) -> Result<(), String> {
 /// Reveal a specific file or folder in the system file manager, selecting it.
 /// Used after exporting a recordings ZIP so the user can grab it immediately.
 #[tauri::command]
-fn reveal_path(path: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg("-R")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer")
-            .arg("/select,")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        // No portable "reveal + select"; open the containing directory.
-        let dir = std::path::Path::new(&path)
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or(path.clone());
-        std::process::Command::new("xdg-open")
-            .arg(&dir)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-#[tauri::command]
 fn reveal_logs_dir() -> Result<(), String> {
     let path = sidecar::logs_dir();
     let path_str = path.to_string_lossy().to_string();
@@ -124,11 +91,24 @@ fn reveal_logs_dir() -> Result<(), String> {
 }
 
 fn ensure_sidecar(app: &AppHandle, state: State<EngineState>) {
-    // Reuse the existing engine process if it is still alive.
-    // PID check is more reliable than file-age: avoids double-spawning when
-    // the engine is healthy but started more than a few seconds ago.
-    if sidecar::is_engine_alive() {
-        return;
+    // Every launch ends up with an engine this shell owns and can therefore
+    // shut down. An engine already running is only reused when it is *ours*;
+    // an orphan left over from a previous run is terminated first, because
+    // adopting one is what used to make the problem permanent — the shell only
+    // ever killed engines it had spawned, so an adopted engine survived the
+    // quit, was adopted again next launch, and survived that quit too.
+    match sidecar::engine_status() {
+        sidecar::EngineStatus::Ours(_) => return,
+        // Not ours to manage: another live shell's engine, or one a developer
+        // started by hand. Leave it running and talk to it.
+        sidecar::EngineStatus::Foreign(_) => return,
+        sidecar::EngineStatus::Orphan(pid) => {
+            eprintln!(
+                "[say-desktop] terminating orphaned engine (pid {pid}) left by a previous run"
+            );
+            sidecar::terminate_engine(pid);
+        }
+        sidecar::EngineStatus::None => {}
     }
     let mut guard = state.sidecar.lock().unwrap();
     if guard.is_some() {
@@ -151,7 +131,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_engine_endpoint,
             reveal_logs_dir,
-            reveal_path,
             open_privacy_settings
         ])
         .setup(|app| {
@@ -171,16 +150,25 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build Say desktop app")
         .run(|app, event| {
-            if let RunEvent::ExitRequested { .. } = event {
+            // Both events, because neither is guaranteed: ExitRequested can be
+            // consumed and Exit is the last thing we ever see. `shutdown_engine`
+            // is idempotent — once the engine is gone the second call finds
+            // nothing and returns immediately — so running it twice costs
+            // nothing and missing it costs the user an invisible engine.
+            //
+            // Note this is only the *fast* path. It cannot run at all under
+            // Force Quit (SIGKILL), which is why the engine watches our pid and
+            // exits on its own. See `owner_watch.py`.
+            if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+                // Dropping the handle runs `Sidecar::drop`, which tears the
+                // engine down too; the explicit call after it is what covers an
+                // engine this shell adopted rather than spawned — the case that
+                // previously had nobody responsible for it.
                 let state: State<EngineState> = app.state();
-                let to_kill = state
-                    .sidecar
-                    .lock()
-                    .ok()
-                    .and_then(|mut g| g.take());
-                if let Some(mut child) = to_kill {
-                    let _ = child.kill();
+                if let Ok(mut g) = state.sidecar.lock() {
+                    drop(g.take());
                 }
+                sidecar::shutdown_engine();
             }
         });
 }

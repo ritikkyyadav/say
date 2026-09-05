@@ -25,7 +25,6 @@ from AppKit import (
     NSBackingStoreBuffered,
     NSBezierPath,
     NSButton,
-    NSColor,
     NSImageView,
     NSMakeRect,
     NSMakeSize,
@@ -132,7 +131,7 @@ class _WizardController(NSView):
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, WIN_W, WIN_H), style, NSBackingStoreBuffered, False,
         )
-        win.setTitle_('Welcome to Oceanus')
+        win.setTitle_('Welcome to Say')
         win.setTitlebarAppearsTransparent_(True)
         win.setMovableByWindowBackground_(True)
         win.setBackgroundColor_(brand.color(brand.MIST))
@@ -157,7 +156,7 @@ class _WizardController(NSView):
         hero.layer().setBackgroundColor_(_cg(brand.SKY_200))
         content.addSubview_(hero)
 
-        # Logo (or fallback bear glyph)
+        # Logo (or the runtime-drawn mark, if the asset is missing)
         logo = brand.logo_image(size=104)
         if logo is not None:
             iv = NSImageView.alloc().initWithFrame_(
@@ -166,14 +165,14 @@ class _WizardController(NSView):
             iv.setImage_(logo)
             hero.addSubview_(iv)
         else:
-            placeholder = _BearPlaceholder.alloc().initWithFrame_(
+            placeholder = _MarkPlaceholder.alloc().initWithFrame_(
                 NSMakeRect((WIN_W - 104) / 2, HERO_H - 132, 104, 104)
             )
             hero.addSubview_(placeholder)
 
         title = _label(
             NSMakeRect(PADDING, 50, WIN_W - 2 * PADDING, 36),
-            'Welcome to Oceanus', brand.font(26, 'semibold'), brand.color(brand.INK),
+            'Welcome to Say', brand.font(26, 'semibold'), brand.color(brand.INK),
             align='center',
         )
         hero.addSubview_(title)
@@ -367,63 +366,53 @@ class _PillButton(NSButton):
             self._set_title_color(brand.SLATE, 'medium', 12.5)
 
 
-class _BearPlaceholder(NSView):
-    """Three-circle bear silhouette used when no logo asset is present.
+class _MarkPlaceholder(NSView):
+    """The Say mark drawn at runtime, for when no logo asset is present.
 
-    Not a substitute for the real mark, but cute enough to ship with.
+    Same silhouette as `assets/logo.png` and the dictation overlay: a
+    continuous base with six stepped columns rising off it. This is a hand
+    copy of the geometry `gen_logo.py` owns — cheap to keep in sync, and it
+    only ever renders if the asset is missing, so it is not worth importing
+    the generator (and Pillow with it) into the app for. It did silently
+    keep the old 5:1 numbers through one re-proportioning, so
+    `test_brand_assets.py` now asserts the two agree.
     """
+
+    # (width, height) per column on the 30 x 12 grid. Widths are carried
+    # explicitly because the mark's columns are not on a uniform pitch.
+    COLUMNS = (
+        (5.75, 3.25),
+        (4.75, 7.0),
+        (6.75, 12.0),
+        (4.25, 9.75),
+        (4.0, 7.0),
+        (4.5, 3.25),
+    )
+    GRID_W = 30.0
+    GRID_H = 12.0
+    ASPECT = GRID_W / GRID_H          # 5:2
+    OPTICAL_LIFT = 0.066              # x mark height — see gen_logo.py
 
     def drawRect_(self, _rect):
         b = self.bounds()
         w, h = b.size.width, b.size.height
 
-        # Outline
-        NSColor.blackColor().setStroke()
-        brand.color(brand.BROWN_500).setFill()
+        mark_w = w * 0.88
+        mark_h = mark_w / self.ASPECT
+        left = (w - mark_w) / 2.0
+        # Bottom-heavy silhouette, so nudge it up off true centre.
+        baseline = (h - mark_h) / 2.0 + mark_h * self.OPTICAL_LIFT
 
-        head = NSBezierPath.bezierPathWithOvalInRect_(
-            NSMakeRect(w * 0.12, h * 0.10, w * 0.76, h * 0.74)
-        )
-        head.fill()
-        head.setLineWidth_(2.5)
-        head.stroke()
-
-        ear_l = NSBezierPath.bezierPathWithOvalInRect_(
-            NSMakeRect(w * 0.06, h * 0.62, w * 0.32, h * 0.32)
-        )
-        ear_l.fill()
-        ear_l.setLineWidth_(2.5)
-        ear_l.stroke()
-
-        ear_r = NSBezierPath.bezierPathWithOvalInRect_(
-            NSMakeRect(w * 0.62, h * 0.62, w * 0.32, h * 0.32)
-        )
-        ear_r.fill()
-        ear_r.setLineWidth_(2.5)
-        ear_r.stroke()
-
-        # Pink cheeks
-        brand.color(brand.PINK_500).setFill()
-        cheek_l = NSBezierPath.bezierPathWithOvalInRect_(
-            NSMakeRect(w * 0.18, h * 0.30, w * 0.16, h * 0.13)
-        )
-        cheek_l.fill()
-        cheek_r = NSBezierPath.bezierPathWithOvalInRect_(
-            NSMakeRect(w * 0.66, h * 0.30, w * 0.16, h * 0.13)
-        )
-        cheek_r.fill()
-
-        # Eyes — small black dots
-        NSColor.blackColor().setFill()
-        for ex in (0.34, 0.66):
-            NSBezierPath.bezierPathWithOvalInRect_(
-                NSMakeRect(w * ex - 3, h * 0.50, 6, 6)
-            ).fill()
-
-        # Nose
-        NSBezierPath.bezierPathWithOvalInRect_(
-            NSMakeRect(w * 0.50 - 4, h * 0.40, 8, 5)
-        ).fill()
+        brand.color(brand.INK).setFill()
+        path = NSBezierPath.bezierPath()
+        x = left
+        for col_w, level in self.COLUMNS:
+            col_px = col_w / self.GRID_W * mark_w
+            path.appendBezierPathWithRect_(
+                NSMakeRect(x, baseline, col_px, level / self.GRID_H * mark_h)
+            )
+            x += col_px
+        path.fill()
 
 
 class _WizardActionTarget(NSView):

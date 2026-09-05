@@ -11,6 +11,11 @@ env/
 build/
 dist/
 *.spec
+# ...except the hand-authored PyInstaller spec. It is NOT generated: it carries
+# the bundle identifier, the app/binary name and the authoritative Info.plist
+# keys (see CLAUDE.md). Without it a fresh clone cannot build a correctly
+# branded, TCC-honoured .app.
+!say/Say.spec
 
 .pytest_cache/
 .ruff_cache/
@@ -21,3 +26,6 @@ dist/
 
 # Claude Code runtime state
 .claude/scheduled_tasks.lock
+
+# gen_logo.py --preview output
+logo-preview.png

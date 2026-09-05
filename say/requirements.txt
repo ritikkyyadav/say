@@ -1,5 +1,13 @@
 # Say — Dependencies
-# On-device voice dictation for macOS
+# On-device voice dictation
+# ============================================================
+#
+# Platform markers, not accidents. The engine core is platform-neutral
+# (test_portability.py proves it imports with every Apple module blocked), and
+# the macOS-only wheels below are marked so that `pip install -r` actually
+# succeeds elsewhere. On a non-Mac you get the cross-platform Moonshine/ONNX
+# backend and no Whisper-via-MLX — which is the correct outcome, because MLX
+# is Metal and does not exist off Apple silicon.
 # ============================================================
 #
 # Versions are pinned to a known-good combination. Bumping mlx-whisper
@@ -7,8 +15,11 @@
 # transcriber.py. Use requirements.lock for full reproducibility once
 # `pip-tools` / `uv pip compile` is wired up (Phase 8).
 
-# Core — Whisper inference on Apple Silicon
-mlx-whisper==0.4.3
+# Optional Whisper models — Apple Silicon only (MLX runs on Metal).
+# A non-Mac build needs a different Whisper runtime (faster-whisper /
+# whisper.cpp); until then those catalogue entries are macOS-only and the
+# bundled Moonshine model is the cross-platform path.
+mlx-whisper==0.4.3; sys_platform == "darwin" and platform_machine == "arm64"
 
 # Bundled default STT — Moonshine Medium (ONNX, English). Runs via OnnxRuntime
 # only (NO torch/MLX); ships its own libmoonshine + libonnxruntime dylibs and
@@ -21,14 +32,16 @@ moonshine-voice==0.0.62
 sounddevice==0.5.5
 numpy>=2.0,<3.0
 
-# macOS integration
-pyobjc-framework-Cocoa==12.1
-pyobjc-framework-Quartz==12.1
+# macOS integration — the overlay, the Fn tap, CGEvent injection and the
+# Accessibility read-back all live behind these. Every module that imports
+# them is listed as port surface in CLAUDE.md.
+pyobjc-framework-Cocoa==12.1; sys_platform == "darwin"
+pyobjc-framework-Quartz==12.1; sys_platform == "darwin"
 pynput==1.8.1
 pyperclip==1.11.0
 
-# Menu bar
-rumps==0.4.0
+# Menu bar (macOS). A Windows build uses a tray icon instead.
+rumps==0.4.0; sys_platform == "darwin"
 
 # HTTP API for the desktop UI sidecar
 fastapi>=0.110

@@ -28,15 +28,47 @@ const MAP: Record<string, string> = {
   'org.mozilla.firefox': 'Firefox',
   'us.zoom.xos': 'Zoom',
   'company.thebrowser.Browser': 'Arc',
+  // The apps this is actually used in. Without these the usage card reads
+  // "Warp-Stable", "Claudefordesktop" and "Desktop", which is the bundle id
+  // showing through rather than a name anybody chose.
+  'dev.warp.Warp-Stable': 'Warp',
+  'dev.warp.Warp': 'Warp',
+  'com.anthropic.claudefordesktop': 'Claude',
+  'com.anthropic.claude': 'Claude',
+  'com.openai.codex': 'Codex',
+  'com.openai.chat': 'ChatGPT',
+  'com.google.antigravity-ide': 'Antigravity',
+  'com.apple.finder': 'Finder',
+  'com.apple.Preview': 'Preview',
+  'com.apple.systempreferences': 'System Settings',
+  'com.ritikyadav.say.desktop': 'Say',
+  'com.ritikyadav.say.dictation': 'Say',
+  'md.obsidian': 'Obsidian',
+  'com.todesktop.230313mzl4w4u92': 'Cursor',
+  'com.jetbrains.intellij': 'IntelliJ',
+  'com.googlecode.iterm2': 'iTerm',
+  'com.apple.iChat': 'Messages',
+  'com.readdle.SparkDesktop': 'Spark',
+  'net.whatsapp.WhatsApp': 'WhatsApp',
+  'ru.keepcoder.Telegram': 'Telegram',
 };
 
 export function appLabel(bundleOrName: string | null | undefined): string {
   if (!bundleOrName) return 'Unknown';
   if (MAP[bundleOrName]) return MAP[bundleOrName];
-  // If it's a reverse-DNS bundle id, take the last component capitalised.
+  // Unknown bundle id: take the last component and make it look like a name
+  // rather than an identifier — drop a trailing channel suffix ("-Stable",
+  // "-beta"), split camelCase, and capitalise. "dev.foo.Bar-Stable" reads as
+  // "Bar", not "Bar-Stable".
   if (bundleOrName.includes('.')) {
-    const tail = bundleOrName.split('.').pop() || bundleOrName;
-    return tail.charAt(0).toUpperCase() + tail.slice(1);
+    let tail = bundleOrName.split('.').pop() || bundleOrName;
+    tail = tail.replace(/[-_](stable|beta|dev|canary|nightly|app|desktop)$/i, '');
+    tail = tail.replace(/[-_]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2');
+    return tail
+      .split(' ')
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
   }
   return bundleOrName;
 }

@@ -1,123 +1,69 @@
+// Shown only when the hotkey is not fully working. It hides itself the moment
+// the Fn listener is live, which is the one piece of permission state that is
+// worth interrupting someone for — everything else the app can just get on
+// with.
+
 import { useQuery } from '@tanstack/react-query';
 import { api, openPrivacySettings, PrivacyPane } from '../lib/api';
 
 const PANES: { pane: PrivacyPane; label: string; why: string }[] = [
-  {
-    pane: 'microphone',
-    label: 'Microphone',
-    why: 'so Oceanus can hear you while you dictate',
-  },
-  {
-    pane: 'accessibility',
-    label: 'Accessibility',
-    why: 'so the Fn-key listener can capture the global hotkey',
-  },
-  {
-    pane: 'input-monitoring',
-    label: 'Input Monitoring',
-    why: 'so the Ctrl+Space fallback can receive keypresses',
-  },
+  { pane: 'microphone', label: 'Microphone', why: 'so Say can hear you' },
+  { pane: 'accessibility', label: 'Accessibility', why: 'so it can type for you, and watch the Fn key' },
+  { pane: 'input-monitoring', label: 'Input Monitoring', why: 'so the key press reaches Say at all' },
 ];
 
 export function PermissionsBanner() {
   const { data: listener } = useQuery({
     queryKey: ['listener'],
     queryFn: api.listener,
-    refetchInterval: 4_000,   // keep status fresh while user grants permissions
+    refetchInterval: 4_000,
     staleTime: 0,
   });
 
-  // If the Fn listener is active and not falling back, everything is fine —
-  // hide the banner entirely.
-  if (listener && listener.kind === 'fn' && !listener.fell_back) {
-    return null;
-  }
-
-  // While the listener state is loading, render nothing rather than a flash.
   if (!listener) return null;
+  // Fn is live and nothing fell back — there is nothing to tell anyone.
+  if (listener.kind === 'fn' && !listener.fell_back) return null;
 
-  const state = describe(listener);
+  const headline = !listener.started
+    ? 'The hotkey could not start'
+    : 'Dictation works, but the Fn key is off';
+
+  const detail = !listener.started
+    ? 'Neither Fn nor the Ctrl+Space fallback registered. Grant these three, then reopen Say.'
+    : 'Say is listening on Ctrl+Space because the engine has not been granted Accessibility. Grant it and Input Monitoring to switch back to Fn — no relaunch needed.';
 
   return (
-    <div className="card p-6 mb-8 border-l-[3px] border-l-crail">
-      <div className="flex items-start gap-4">
-        <div
-          className={`w-8 h-8 rounded-full flex items-center justify-center font-serif text-[15px] shrink-0 mt-0.5 ${
-            state.severity === 'error' ? 'bg-ink text-book-cloth' : 'bg-crail text-book-cloth'
-          }`}
-        >
-          {state.severity === 'error' ? '!' : 'i'}
+    <div style={{ marginBottom: 20 }}>
+      <div
+        className="card"
+        style={{ padding: '18px 22px', borderLeft: '3px solid var(--accent)', marginBottom: 11 }}
+      >
+        <div className="card-t">{headline}</div>
+        <div className="card-s" style={{ maxWidth: '64ch' }}>
+          {detail}
         </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="font-serif text-h4 font-normal text-ink mb-1.5">{state.title}</h3>
-          <p className="text-cloud-dark text-[14px] leading-relaxed mb-5 max-w-prose">
-            {state.body}
-          </p>
-
-          <div className="flex flex-col gap-2">
-            {PANES.map(({ pane, label, why }) => (
-              <div
-                key={pane}
-                className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-md bg-book-cloth border border-cloud-light"
-              >
-                <div className="min-w-0">
-                  <div className="text-[14px] font-medium text-ink">{label}</div>
-                  <div className="text-[12px] text-cloud-dark truncate">{why}</div>
-                </div>
-                <button
-                  onClick={() => openPrivacySettings(pane)}
-                  className="shrink-0 px-3 py-1.5 rounded-md text-[12px] font-medium bg-ink text-book-cloth hover:bg-[#2a2a28] transition-colors"
-                >
-                  Open Settings
-                </button>
-              </div>
-            ))}
+      </div>
+      <div className="banner">
+        {PANES.map(({ pane, label, why }) => (
+          <div className="pane" key={pane}>
+            <h4>{label}</h4>
+            <p>{why}</p>
+            <button
+              className="btn pri"
+              style={{ width: 'auto', padding: '6px 12px', fontSize: 12 }}
+              onClick={() => openPrivacySettings(pane)}
+            >
+              Open Settings
+            </button>
           </div>
-
-          <p className="mt-5 text-[12px] text-cloud-dark leading-relaxed max-w-prose">
-            Grant these to <span className="font-medium text-ink">Oceanus</span> (the engine). If it
-            isn't in the list yet, click <span className="font-mono">+</span>, press{' '}
-            <span className="font-mono">⌘⇧G</span>, and add{' '}
-            <span className="font-mono">
-              /Applications/Oceanus.app/Contents/Resources/OceanusEngine.app
-            </span>
-            . Quit and reopen Oceanus once all three are on — this banner hides itself when Fn
-            becomes active.
-          </p>
-        </div>
+        ))}
+      </div>
+      <div className="card-s" style={{ marginTop: 10, maxWidth: '72ch' }}>
+        Grant these to <b style={{ color: 'var(--ink)' }}>Say</b> — the engine, not the window.
+        If it is not listed, click <span className="mono">+</span>, press{' '}
+        <span className="mono">⌘⇧G</span> and add{' '}
+        <span className="mono">/Applications/Say.app/Contents/Resources/SayEngine.app</span>.
       </div>
     </div>
   );
-}
-
-type Severity = 'warn' | 'error';
-
-function describe(listener: {
-  kind: 'fn' | 'legacy' | null;
-  fell_back: boolean;
-  fn_error: string | null;
-  started: boolean;
-  accessibility_trusted: boolean;
-}): { title: string; body: string; severity: Severity } {
-  if (!listener.started) {
-    return {
-      title: 'Hotkey listener could not start',
-      body:
-        'Neither the Fn key nor the Ctrl+Space fallback registered. Grant the three permissions below and relaunch Oceanus.',
-      severity: 'error',
-    };
-  }
-  if (listener.kind === 'legacy' && listener.fell_back) {
-    return {
-      title: 'Dictation works, but Fn key is disabled',
-      body:
-        'Oceanus is currently listening on Ctrl+Space because Accessibility isn\'t granted to the engine. Grant Accessibility AND Input Monitoring below to switch to Fn — and to make Ctrl+Space actually receive events (pynput needs Input Monitoring too).',
-      severity: 'warn',
-    };
-  }
-  return {
-    title: 'Permissions check',
-    body: 'Make sure all three permissions are granted to Oceanus.',
-    severity: 'warn',
-  };
 }

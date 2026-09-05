@@ -40,6 +40,10 @@ export type Transcript = {
   inject_method: 'accessibility' | 'clipboard' | string;
   target_app: string | null;
   success: boolean;
+  /** Whether a saved WAV exists for this dictation, so the feed can offer
+   *  playback without a probe request per row. False for everyone who has
+   *  not opted into keeping audio. */
+  has_audio: boolean;
 };
 
 export type ListenerState = {
@@ -56,6 +60,14 @@ export type StatsSummary = {
   wpm_30d: number;
   streak_days: number;
   fixes_count: number;
+  /** Insertions the read-back actually compared in the last 30 days — the rate's
+   *  denominator. Excludes ones we could not read (and all history predating the
+   *  feature): unmeasured must never be scored as clean. */
+  insertions_30d: number;
+  /** Share of insertions the user then edited. 0 is the goal. */
+  correction_rate: number;
+  /** Share of inserted *words* the user had to change. */
+  correction_word_rate: number;
   words_this_month: number;
   words_prev_month: number;
   transcript_count: number;
@@ -74,7 +86,92 @@ export type HeatmapCell = {
 
 export type UserProfile = {
   first_name: string;
+  /** Desktop first-run flow completed. Local flag; there is no account. */
+  onboarded: boolean;
 };
+
+// ── Vocabulary ─────────────────────────────────────────────────────────
+// What the transcripts say about the person who spoke them. Computed on the
+// engine (say/vocabulary.py) so the thresholds that decide whether a claim is
+// true live next to the words that make the claim.
+
+export type WordStat = {
+  word: string;
+  count: number;
+  /** One in every `per` words spoken. */
+  per: number;
+  /** Share of dictations it appears in, 0–1. */
+  spread: number;
+};
+
+export type InsightViz =
+  | { kind: 'dots'; every: number; rows: number; caption: string; label: string }
+  | { kind: 'bars'; rows: [string, number][]; unit?: string };
+
+export type Insight = {
+  id: string;
+  /** Carries `*emphasis*` markup — render with `markup()` from lib/markup. */
+  headline: string;
+  /** Carries `**bold**` markup. */
+  body: string;
+  viz: InsightViz;
+};
+
+export type VocabularyReport = {
+  total_words: number;
+  unique_words: number;
+  dictations: number;
+  /** Degenerate (decoder-loop) transcripts left out of the counts. */
+  excluded: number;
+  /** False when the corpus is too thin to say anything honest about. */
+  enough_data: boolean;
+  top_words: WordStat[];
+  phrases: WordStat[];
+  fillers: WordStat[];
+  hours: number[];      // 24 buckets of words
+  weekdays: number[];   // 7 buckets of dictations, Monday first
+  sentence_avg: number;
+  longest_words: number;
+  longest_seconds: number;
+  speaking_seconds: number;
+  typing_seconds: number;
+  insights: Insight[];
+};
+
+// ── Overlay appearance ─────────────────────────────────────────────────
+
+export type OverlayPreset = {
+  id: string;
+  name: string;
+  /** Cycled across the twelve columns. Empty = follows the system appearance. */
+  colors: string[];
+  blurb: string;
+  adaptive: boolean;
+};
+
+export type OverlayPatternInfo = { id: string; name: string; blurb: string };
+
+export type OverlayConfig = {
+  theme: string;
+  colors: string[];
+  /** How the colours are spread across the twelve columns. Everything except
+   *  'alternate' derives the colour from the live audio, so it never repeats. */
+  pattern: string;
+  patterns: OverlayPatternInfo[];
+  show_overlay: boolean;
+  contrast: string;
+  max_colors: number;
+  presets: OverlayPreset[];
+};
+
+export type OverlayConfigPatch = Partial<{
+  theme: string;
+  colors: string[];
+  pattern: string;
+  show_overlay: boolean;
+  contrast: string;
+  preview: boolean;
+}>;
 
 export type ModelDownloadState = 'idle' | 'downloading' | 'done' | 'error';
 
@@ -284,11 +381,14 @@ export const api = {
   health: () => getJSON<{ ok: boolean; state: DictationStateName }>('/health'),
   listener: () => getJSON<ListenerState>('/listener'),
   profile: () => getJSON<UserProfile>('/user/profile'),
+  setProfile: (patch: { first_name?: string; onboarded?: boolean }) =>
+    sendJSON<UserProfile>('POST', '/user/profile', patch),
   transcripts: (limit = 200, before?: string) =>
     getJSON<Transcript[]>(
       `/transcripts?limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ''}`,
     ),
   summary: () => getJSON<StatsSummary>('/stats/summary'),
+  vocabulary: () => getJSON<VocabularyReport>('/stats/vocabulary'),
   desktopUsage: (days = 30) =>
     getJSON<DesktopUsageRow[]>(`/stats/desktop_usage?days=${days}`),
   heatmap: (days = 180) =>
@@ -300,6 +400,12 @@ export const api = {
       headers: authHeaders(ep),
     });
   },
+
+  // ── Overlay appearance ────────────────────────────────────────────────
+  overlay: () => getJSON<OverlayConfig>('/overlay'),
+  setOverlay: (patch: OverlayConfigPatch) =>
+    sendJSON<OverlayConfig>('POST', '/overlay', patch),
+  previewOverlay: () => sendJSON<{ shown: boolean }>('POST', '/overlay/preview'),
 
   // ── Model management ──────────────────────────────────────────────────
   models: () => getJSON<ModelsResponse>('/models'),
@@ -333,15 +439,6 @@ export type PrivacyPane = 'microphone' | 'accessibility' | 'input-monitoring';
 export async function openPrivacySettings(pane: PrivacyPane): Promise<void> {
   try {
     await invokeTauri<void>('open_privacy_settings', { pane });
-  } catch {
-    /* dev / non-Tauri — silently no-op */
-  }
-}
-
-// Reveal a file/folder in Finder (selecting it). Used after exporting a ZIP.
-export async function revealPath(path: string): Promise<void> {
-  try {
-    await invokeTauri<void>('reveal_path', { path });
   } catch {
     /* dev / non-Tauri — silently no-op */
   }

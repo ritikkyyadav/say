@@ -21,6 +21,26 @@ pub struct RuntimeInfo {
     pub token: String,
     #[serde(default)]
     pub pid: Option<i64>,
+    /// The shell process that launched this engine as a sidecar. Absent when
+    /// the engine was started by hand (dev / menu-bar mode), which is how we
+    /// tell "nobody's to kill" apart from "orphaned and should not exist".
+    #[serde(default)]
+    pub owner_pid: Option<i64>,
+}
+
+/// Who, if anyone, the engine recorded in runtime.json belongs to.
+#[derive(Debug, PartialEq, Eq)]
+pub enum EngineStatus {
+    /// No engine is running.
+    None,
+    /// Launched by this shell.
+    Ours(i64),
+    /// A sidecar engine whose owner is gone (or was never recorded) — it
+    /// outlived the app that started it and must not still be listening.
+    Orphan(i64),
+    /// Someone else's engine: another live shell's, or one a developer started
+    /// by hand. Not ours to kill.
+    Foreign(i64),
 }
 
 pub struct Sidecar {
@@ -32,36 +52,116 @@ pub struct Sidecar {
 }
 
 impl Sidecar {
-    /// Graceful shutdown: SIGTERM the engine pid from runtime.json, wait up to
-    /// 3s for it to flush its SQLite store and release the single-instance
-    /// lock, then SIGKILL as a last resort.
     pub fn kill(&mut self) -> io::Result<()> {
-        let Some(pid) = read_runtime_info().and_then(|i| i.pid) else {
-            return Ok(());
-        };
+        shutdown_engine();
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: i64) -> bool {
+    pid > 0 && unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
+}
+
+#[cfg(not(unix))]
+fn pid_alive(_pid: i64) -> bool {
+    false
+}
+
+/// Does `pid` look like a Say engine running in sidecar mode?
+///
+/// Guards against pid reuse: the number comes from runtime.json, which may name
+/// a process that exited long ago and had its pid recycled onto something
+/// unrelated. Signalling that would be someone else's crash. `--no-menubar`
+/// exists only for the sidecar path — nobody launches it by hand — so its
+/// presence, together with the bundle name, identifies the engine positively
+/// rather than by a number we merely hope is still right.
+#[cfg(unix)]
+fn is_say_engine(pid: i64) -> bool {
+    let Ok(out) = Command::new("/bin/ps")
+        .arg("-o")
+        .arg("command=")
+        .arg("-p")
+        .arg(pid.to_string())
+        .output()
+    else {
+        return false;
+    };
+    let cmd = String::from_utf8_lossy(&out.stdout);
+    cmd.contains("--no-menubar") && cmd.contains("Say")
+}
+
+#[cfg(not(unix))]
+fn is_say_engine(_pid: i64) -> bool {
+    false
+}
+
+/// Classify the engine recorded in runtime.json.
+pub fn engine_status() -> EngineStatus {
+    let Some(info) = read_runtime_info() else {
+        return EngineStatus::None;
+    };
+    let Some(pid) = info.pid else {
+        return EngineStatus::None;
+    };
+    if !pid_alive(pid) {
+        return EngineStatus::None;
+    }
+    let ours = std::process::id() as i64;
+    match info.owner_pid {
+        Some(owner) if owner == ours => EngineStatus::Ours(pid),
+        // Owner recorded but dead: the app it belonged to is gone and this
+        // engine should have gone with it.
+        Some(owner) if !pid_alive(owner) => EngineStatus::Orphan(pid),
+        Some(_) => EngineStatus::Foreign(pid),
+        // No owner recorded. A sidecar engine (--no-menubar) always has one
+        // now, so a sidecar without one predates this and is an orphan from a
+        // previous build; anything else is a hand-started engine we leave be.
+        None if is_say_engine(pid) => EngineStatus::Orphan(pid),
+        None => EngineStatus::Foreign(pid),
+    }
+}
+
+/// SIGTERM the engine, wait up to 3s for it to flush its SQLite store, release
+/// the Fn-key override and clear runtime.json, then SIGKILL as a last resort.
+pub fn terminate_engine(pid: i64) {
+    #[cfg(unix)]
+    {
+        if !pid_alive(pid) || !is_say_engine(pid) {
+            return;
+        }
         let pid = pid as libc::pid_t;
-        #[cfg(unix)]
-        {
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
             if unsafe { libc::kill(pid, 0) } != 0 {
-                return Ok(()); // already gone
+                return; // exited cleanly
             }
-            unsafe { libc::kill(pid, libc::SIGTERM) };
-            let deadline = Instant::now() + Duration::from_secs(3);
-            loop {
-                if unsafe { libc::kill(pid, 0) } != 0 {
-                    return Ok(()); // exited
-                }
-                if Instant::now() >= deadline {
-                    unsafe { libc::kill(pid, libc::SIGKILL) };
-                    return Ok(());
-                }
-                std::thread::sleep(Duration::from_millis(100));
+            if Instant::now() >= deadline {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+                return;
             }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        #[cfg(not(unix))]
-        {
-            Ok(())
-        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+    }
+}
+
+/// Take down the engine this shell is responsible for.
+///
+/// Deliberately keyed on runtime.json rather than on a handle we happen to
+/// hold: the shell used to kill only an engine it had spawned *itself*, so an
+/// engine adopted at launch was killed by nobody — and since a surviving engine
+/// is exactly what gets adopted next time, one orphan made every later quit
+/// leave another. Reading the file each time means "whatever is ours right now",
+/// which is the only version of this that cannot drift.
+pub fn shutdown_engine() {
+    match engine_status() {
+        EngineStatus::Ours(pid) | EngineStatus::Orphan(pid) => terminate_engine(pid),
+        EngineStatus::Foreign(_) | EngineStatus::None => {}
     }
 }
 
@@ -123,36 +223,15 @@ pub fn is_runtime_fresh(max_age: Duration) -> bool {
     age <= max_age && read_runtime_info().is_some()
 }
 
-/// Check whether the engine process recorded in runtime.json is still alive.
-/// Uses kill(pid, 0) on Unix — no signal is sent; it just checks existence.
-/// Returns false if runtime.json is absent, has no pid, or the process is gone.
-pub fn is_engine_alive() -> bool {
-    let Some(info) = read_runtime_info() else {
-        return false;
-    };
-    let Some(pid) = info.pid else {
-        return false;
-    };
-    #[cfg(unix)]
-    {
-        (unsafe { libc::kill(pid as libc::pid_t, 0) }) == 0
-    }
-    #[cfg(not(unix))]
-    {
-        // On non-Unix we fall back to the 60-second freshness heuristic.
-        is_runtime_fresh(Duration::from_secs(60))
-    }
-}
-
 /// Candidate paths for the engine **.app bundle** (not the inner binary).
 fn engine_app_paths(app: &AppHandle) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(resource_dir) = app.path().resource_dir() {
-        out.push(resource_dir.join("OceanusEngine.app"));
+        out.push(resource_dir.join("SayEngine.app"));
     }
     if let Ok(exe) = env::current_exe() {
         if let Some(contents) = exe.parent().and_then(|p| p.parent()) {
-            out.push(contents.join("Resources").join("OceanusEngine.app"));
+            out.push(contents.join("Resources").join("SayEngine.app"));
         }
     }
     out
@@ -163,9 +242,13 @@ pub fn spawn(app: &AppHandle) -> io::Result<Sidecar> {
     // SAY_ENGINE_BIN is set (the packaged app always goes through LaunchServices
     // below). In dev the Terminal already holds the TCC grants, so attribution
     // is not a concern.
+    let owner_pid = std::process::id().to_string();
+
     if let Ok(custom) = env::var("SAY_ENGINE_BIN") {
         Command::new(custom)
             .arg("--no-menubar")
+            .arg("--owner-pid")
+            .arg(&owner_pid)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
@@ -178,7 +261,7 @@ pub fn spawn(app: &AppHandle) -> io::Result<Sidecar> {
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                "OceanusEngine.app not found in bundle resources",
+                "SayEngine.app not found in bundle resources",
             )
         })?;
 
@@ -189,11 +272,17 @@ pub fn spawn(app: &AppHandle) -> io::Result<Sidecar> {
     // false and the Fn CGEventTap can't be created). `open -n` registers the
     // engine as its own app (parent = launchd) with a clean code identity
     // that matches what the user granted, so Fn works.
+    // `--owner-pid` is what makes the engine mortal. `open -n` reparents it to
+    // launchd, so it has no other way to know whose app it is serving — and a
+    // Force Quit kills this shell outright, leaving no shell-side code to run.
+    // The engine watches the pid and exits on its own when it goes.
     let status = Command::new("/usr/bin/open")
         .arg("-n")
         .arg(&engine_app)
         .arg("--args")
         .arg("--no-menubar")
+        .arg("--owner-pid")
+        .arg(&owner_pid)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;

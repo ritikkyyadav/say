@@ -38,8 +38,8 @@ if TYPE_CHECKING:
 _log = get_logger('recordings')
 
 _EXPORT_README = (
-    "Oceanus / Say — exported recordings\n"
-    "===================================\n\n"
+    "Say — exported recordings\n"
+    "=========================\n\n"
     "This archive was created locally on your Mac. Nothing here was uploaded.\n\n"
     "  clips/         one WAV per dictation (16 kHz mono)\n"
     "  manifest.csv   spreadsheet-friendly index of every clip + its transcript\n"
@@ -342,7 +342,7 @@ def export_zip(store: TranscriptStore) -> dict[str, Any]:
         return {'path': None, 'count': 0, 'bytes': 0}
 
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    dest = exports_dir(store) / f'Oceanus-Recordings-{stamp}.zip'
+    dest = exports_dir(store) / f'Say-Recordings-{stamp}.zip'
 
     manifest: list[dict[str, Any]] = []
     with zipfile.ZipFile(dest, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
