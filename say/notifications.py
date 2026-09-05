@@ -6,7 +6,7 @@
 
 import subprocess
 
-from config import SHOW_NOTIFICATIONS
+import config
 
 
 def notify(title: str, text: str):
@@ -16,7 +16,11 @@ def notify(title: str, text: str):
         title: Notification title (e.g., 'Say')
         text:  Notification body text (truncated to 80 chars)
     """
-    if not SHOW_NOTIFICATIONS:
+    # Read at call time, not import time. `from config import
+    # SHOW_NOTIFICATIONS` copied the value once, so switching notifications
+    # off in Preferences did nothing until the engine was restarted — settings
+    # mirror onto the `config` module, and nothing here re-read it.
+    if not getattr(config, 'SHOW_NOTIFICATIONS', True):
         return
 
     # Collapse whitespace before truncating. An AppleScript string literal

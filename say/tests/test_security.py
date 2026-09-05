@@ -150,18 +150,22 @@ class NotificationSafety(unittest.TestCase):
     in the app if anyone ever dictates something they were sent."""
 
     def setUp(self):
+        import config
         import notifications
 
         self.mod = notifications
         self.calls: list[list[str]] = []
         self._real_run = subprocess.run
         notifications.subprocess.run = lambda argv, **kw: self.calls.append(list(argv))
-        self._show = notifications.SHOW_NOTIFICATIONS
-        notifications.SHOW_NOTIFICATIONS = True
+        # The switch lives on `config` and is read at call time (B11).
+        self._show = config.SHOW_NOTIFICATIONS
+        config.SHOW_NOTIFICATIONS = True
 
     def tearDown(self):
+        import config
+
         self.mod.subprocess.run = self._real_run
-        self.mod.SHOW_NOTIFICATIONS = self._show
+        config.SHOW_NOTIFICATIONS = self._show
 
     def test_the_text_is_an_argument_never_part_of_the_script(self):
         self.mod.notify('Say', 'hello "there" and a \\ backslash')
@@ -188,7 +192,9 @@ class NotificationSafety(unittest.TestCase):
         self.assertLessEqual(len(self.calls[0][-2]), 82)
 
     def test_notifications_can_be_switched_off(self):
-        self.mod.SHOW_NOTIFICATIONS = False
+        import config
+
+        config.SHOW_NOTIFICATIONS = False
         self.mod.notify('Say', 'anything')
         self.assertEqual(self.calls, [])
 
