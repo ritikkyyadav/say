@@ -386,6 +386,14 @@ class DictationController:
         target_app = started_in or now_in
         decision = focus_policy(started_in, now_in)
 
+        raw_asr = text
+        try:
+            from provenance import snapshot
+
+            pipeline = snapshot()
+        except Exception:
+            _log.debug('Could not capture pipeline provenance', exc_info=True)
+            pipeline = {}
         text = self._postprocess(text, target_app)
         if not text:
             self._emit(DictationState.READY, 'Ready — nothing to insert')
@@ -416,6 +424,9 @@ class DictationController:
                 inject_method='pending',
                 target_app=target_app,
                 success=False,
+                raw_asr=raw_asr,
+                observation_status='pending',
+                **pipeline,
             )
         except Exception:
             _log.exception('Failed to persist transcript before injection')
@@ -683,6 +694,10 @@ class DictationController:
         may not read.
         """
         if not getattr(config, 'LEARN_FROM_CORRECTIONS', True):
+            try:
+                store.finish_observation(transcript_id, 'disabled')
+            except Exception:
+                _log.debug('Could not persist disabled observation', exc_info=True)
             return
         try:
             if self._corrections is None:
@@ -692,6 +707,10 @@ class DictationController:
             self._corrections.observe(transcript_id, text, target_app)
         except Exception:
             _log.debug('Could not arm correction read-back', exc_info=True)
+            try:
+                store.finish_observation(transcript_id, 'unarmed')
+            except Exception:
+                _log.debug('Could not persist failed read-back', exc_info=True)
 
     def _save_recording(self, store: Any, transcript_id: int, audio: Any) -> None:
         """Persist the clip's audio when the user has opted into recordings.

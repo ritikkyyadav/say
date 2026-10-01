@@ -31,6 +31,15 @@ from typing import Any
 # written after that definition would resolve to it.
 _Rows = list[dict[str, Any]]
 
+# Only completed, attributable observations belong in the correction-rate
+# denominator. Rewrites and deletions are measured, but not clean insertions.
+_SCOREABLE_OUTCOMES = ('clean', 'corrected', 'continuation', 'formatting_only')
+_OBSERVATION_OUTCOMES = frozenset({
+    *_SCOREABLE_OUTCOMES, 'rewrite', 'deleted', 'unreadable', 'unlocatable',
+    'ambiguous', 'disabled', 'dropped', 'unarmed',
+})
+_MEASURED_OUTCOMES = frozenset({*_SCOREABLE_OUTCOMES, 'rewrite', 'deleted'})
+
 # ── Path resolution ─────────────────────────────────────────────────────────
 
 
@@ -197,14 +206,21 @@ class TranscriptStore:
         if 'audio_path' not in cols:
             self._conn.execute('ALTER TABLE transcripts ADD COLUMN audio_path TEXT')
         if 'observed' not in cols:
-            # Whether the read-back actually compared this insertion against
-            # what the user left behind. Every row that predates the feature
-            # gets 0, which is the point: they were never looked at, and
-            # counting them as clean would report a pipeline that had never
-            # been measured as flawless.
+            # Older insertions were never measured. Do not backfill a clean outcome.
             self._conn.execute(
                 'ALTER TABLE transcripts ADD COLUMN observed INTEGER NOT NULL DEFAULT 0'
             )
+        for name, kind in (
+            ('observation_status', 'TEXT'),
+            ('observation_ts_utc', 'TEXT'),
+            ('raw_asr', 'TEXT'),
+            ('pipeline_hash', 'TEXT'),
+            ('pipeline_version', 'TEXT'),
+            ('model_backend', 'TEXT'),
+            ('language', 'TEXT'),
+        ):
+            if name not in cols:
+                self._conn.execute(f'ALTER TABLE transcripts ADD COLUMN {name} {kind}')
 
     def close(self) -> None:
         with self._lock:
@@ -226,6 +242,12 @@ class TranscriptStore:
         target_app: str | None,
         success: bool = True,
         ts_utc: str | None = None,
+        raw_asr: str | None = None,
+        pipeline_hash: str | None = None,
+        pipeline_version: str | None = None,
+        model_backend: str | None = None,
+        language: str | None = None,
+        observation_status: str | None = None,
     ) -> int:
         ts = ts_utc or datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z')
         wc = _word_count(text)
@@ -234,8 +256,10 @@ class TranscriptStore:
                 """
                 INSERT INTO transcripts
                   (ts_utc, text, word_count, audio_seconds, inference_seconds,
-                   model, inject_method, target_app, success)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   model, inject_method, target_app, success, raw_asr,
+                   pipeline_hash, pipeline_version, model_backend, language,
+                   observation_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ts,
@@ -247,6 +271,12 @@ class TranscriptStore:
                     inject_method,
                     target_app,
                     1 if success else 0,
+                    raw_asr,
+                    pipeline_hash,
+                    pipeline_version,
+                    model_backend,
+                    language,
+                    observation_status,
                 ),
             )
             self._conn.commit()
@@ -263,8 +293,13 @@ class TranscriptStore:
         """
         with self._lock:
             self._conn.execute(
-                'UPDATE transcripts SET success = ?, inject_method = ? WHERE id = ?',
-                (1 if success else 0, inject_method, int(transcript_id)),
+                '''UPDATE transcripts
+                   SET success = ?, inject_method = ?,
+                       observation_status = CASE
+                           WHEN ? = 0 AND observation_status = 'pending'
+                           THEN 'not_applicable' ELSE observation_status END
+                   WHERE id = ?''',
+                (1 if success else 0, inject_method, 1 if success else 0, int(transcript_id)),
             )
             self._conn.commit()
 
@@ -330,6 +365,44 @@ class TranscriptStore:
             self._conn.commit()
             return int(cur.lastrowid or 0)
 
+    def finish_observation(
+        self, transcript_id: int, outcome: str, *,
+        inserted: str | None = None, corrected: str | None = None,
+        edit_distance: int | None = None, words: int | None = None,
+        target_app: str | None = None,
+    ) -> None:
+        """Store one classified read-back, and its correction, in one transaction.
+
+        A rejected rewrite/deletion is measurable but never scores as clean.
+        No document anchors or discarded edited text enter this table.
+        """
+        if outcome not in _OBSERVATION_OUTCOMES:
+            raise ValueError(f'Unknown observation outcome: {outcome}')
+        if outcome == 'corrected' and (
+            inserted is None or corrected is None or edit_distance is None or words is None
+        ):
+            raise ValueError('A corrected observation needs its diff')
+        ts = datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z')
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute(
+                    '''UPDATE transcripts SET observation_status = ?, observation_ts_utc = ?,
+                       observed = ? WHERE id = ? AND observation_status = 'pending' ''',
+                    (outcome, ts, int(outcome in _MEASURED_OUTCOMES), int(transcript_id)),
+                )
+                if cur.rowcount != 1:
+                    return
+                if outcome == 'corrected':
+                    assert edit_distance is not None and words is not None
+                    self._conn.execute(
+                        '''INSERT INTO corrections
+                           (transcript_id, ts_utc, source, inserted, corrected,
+                            edit_distance, words, target_app)
+                           VALUES (?, ?, 'observed', ?, ?, ?, ?, ?)''',
+                        (int(transcript_id), ts, inserted, corrected,
+                         int(edit_distance), int(words), target_app),
+                    )
+
     def mark_observed(self, transcript_id: int) -> None:
         """Record that the read-back actually compared this insertion.
 
@@ -373,13 +446,13 @@ class TranscriptStore:
             datetime.combine(today, datetime.min.time()) - timedelta(days=max(1, int(days)))
         ).isoformat() + 'Z'
         with self._lock:
-            # Only insertions the read-back actually compared. Counting every
-            # successful insertion would fold in the ones we never looked at
-            # — including every dictation from before this feature existed —
-            # and report them as clean.
+            # Legacy observed rows have no classification and retain their
+            # original meaning. New rewrites/deletions are not clean scores.
             insertions = int(self._conn.execute(
-                'SELECT COUNT(*) AS n FROM transcripts '
-                'WHERE success = 1 AND observed = 1 AND ts_utc >= ?',
+                '''SELECT COUNT(*) AS n FROM transcripts
+                   WHERE success = 1 AND observed = 1 AND ts_utc >= ?
+                     AND (observation_status IS NULL OR observation_status IN
+                          ('clean', 'corrected', 'continuation', 'formatting_only'))''',
                 (cutoff,),
             ).fetchone()['n'])
             # Every successful insertion in the window, measured or not. The
@@ -390,13 +463,25 @@ class TranscriptStore:
                 (cutoff,),
             ).fetchone()['n'])
             rows = self._conn.execute(
-                'SELECT words, edit_distance FROM corrections WHERE ts_utc >= ?',
+                '''SELECT c.inserted, c.corrected FROM corrections c
+                   JOIN transcripts t ON t.id = c.transcript_id
+                   WHERE t.success = 1 AND t.observed = 1 AND t.ts_utc >= ?
+                     AND (t.observation_status IS NULL OR t.observation_status = 'corrected')''',
                 (cutoff,),
             ).fetchall()
 
-        from corrections import summarise
+        from corrections import diff, looks_like_correction, summarise
 
-        rate = summarise([dict(r) for r in rows], insertions=insertions)
+        # Score stored rows under today's rules, not the ones they were
+        # recorded under. The ledger keeps what was observed; a row an older
+        # diff mistook for a correction must not go on inflating the rate.
+        scored = []
+        for r in rows:
+            d = diff(r['inserted'], r['corrected'])
+            if looks_like_correction(d):
+                scored.append({'words': d.words, 'edit_distance': d.distance})
+
+        rate = summarise(scored, insertions=insertions)
         return {
             'insertions': rate.insertions,
             'inserted_total': inserted_total,
@@ -405,6 +490,41 @@ class TranscriptStore:
             'edited_words': rate.edited_words,
             'touch_rate': round(rate.touch_rate, 4),
             'word_rate': round(rate.word_rate, 4),
+            'coverage': self.observation_summary(days=days, today=today),
+        }
+
+    def observation_summary(self, *, days: int = 30, today: date | None = None) -> dict[str, Any]:
+        """Coverage and classified outcomes for successful insertions (not accuracy)."""
+        today = today or datetime.now(UTC).date()
+        cutoff = (
+            datetime.combine(today, datetime.min.time()) - timedelta(days=max(1, int(days)))
+        ).isoformat() + 'Z'
+        with self._lock:
+            rows = self._conn.execute(
+                '''SELECT target_app, observation_status, observed FROM transcripts
+                   WHERE success = 1 AND ts_utc >= ?''', (cutoff,),
+            ).fetchall()
+        outcomes: dict[str, int] = {}
+        apps: dict[str, dict[str, int]] = {}
+        for row in rows:
+            status = row['observation_status'] or (
+                'legacy_observed' if row['observed'] else 'unknown_historical'
+            )
+            outcomes[status] = outcomes.get(status, 0) + 1
+            app = row['target_app'] or 'Unknown'
+            counts = apps.setdefault(app, {'successful': 0, 'measured': 0, 'scoreable': 0})
+            counts['successful'] += 1
+            if status in _MEASURED_OUTCOMES or status == 'legacy_observed':
+                counts['measured'] += 1
+            if status in _SCOREABLE_OUTCOMES or status == 'legacy_observed':
+                counts['scoreable'] += 1
+        measured = sum(v['measured'] for v in apps.values())
+        return {
+            'successful': len(rows),
+            'measured': measured,
+            'coverage_rate': round(measured / len(rows), 4) if rows else 0.0,
+            'outcomes': outcomes,
+            'by_app': apps,
         }
 
     def audio_path_for(self, transcript_id: int) -> str | None:
@@ -549,6 +669,8 @@ class TranscriptStore:
             'insertions_30d': corr['insertions'],
             'correction_rate': corr['touch_rate'],
             'correction_word_rate': corr['word_rate'],
+            'correction_coverage_rate': corr['coverage']['coverage_rate'],
+            'correction_outcomes_30d': corr['coverage']['outcomes'],
             'words_this_month': words_30,
             'words_prev_month': words_prev,
             'transcript_count': self.count(),

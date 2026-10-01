@@ -57,23 +57,34 @@ def main() -> int:
 
     s = store.correction_summary(days=args.days)
     clean = 1.0 - s['touch_rate'] if s['insertions'] else 0.0
+    coverage = s['coverage']
 
     print()
     print(f'  Last {args.days} days · {db}')
+    print(f'  Read-back coverage {coverage["measured"]}/{coverage["successful"]} '
+          f'({coverage["coverage_rate"] * 100:.1f}%)')
+    if coverage['outcomes']:
+        print('  Outcomes ' + ', '.join(
+            f'{status}: {n}' for status, n in sorted(coverage['outcomes'].items())
+        ))
+        for app, counts in sorted(coverage['by_app'].items(),
+                                  key=lambda item: -item[1]['successful']):
+            print(f'    {app}: {counts["measured"]}/{counts["successful"]} measured')
     print()
     if not s['insertions']:
-        if s['inserted_total']:
+        if coverage['measured']:
+            print('  No scoreable insertions: observed edits were excluded as rewrites/deletions.')
+        elif s['inserted_total']:
             print(f'  {s["inserted_total"]} insertions in this window, none measured yet.')
-            print('  Nothing has been scored: the read-back either has not run for these')
-            print('  or could not read the field. Dictate again and edit the result.')
+            print('  Read-back did not complete or could not read the field.')
         else:
             print('  No insertions in this window yet.')
     else:
-        print(f'  Left untouched   {_bar(clean)}  {clean * 100:5.1f}%')
-        print(f'  {s["corrected"]} of {s["insertions"]} measured insertions were edited '
-              f'afterwards  (measured {s["insertions"]}/{s["inserted_total"]} inserted)')
-        print(f'  {s["edited_words"]} of {s["words"]} words in those edits changed '
-              f'({s["word_rate"] * 100:.1f}%)')
+        print(f'  No scored correction {_bar(clean)}  {clean * 100:5.1f}%')
+        print(f'  {s["corrected"]} of {s["insertions"]} scoreable insertions were corrected '
+              f'({s["insertions"]}/{s["inserted_total"]} successful inserts scoreable)')
+        print(f'  {s["edited_words"]} of {s["words"]} words in corrected rows changed '
+              f'({s["word_rate"] * 100:.1f}%; not an overall word error rate)')
     print()
 
     rows = store.corrections(limit=args.limit)

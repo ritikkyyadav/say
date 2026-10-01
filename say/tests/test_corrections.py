@@ -32,6 +32,29 @@ class DiffTests(unittest.TestCase):
         self.assertEqual(d.rate, 0.0)
         self.assertFalse(corrections.looks_like_correction(d))
 
+    def test_a_second_dictation_typed_flush_against_the_first_is_not_a_correction(self):
+        """The only correction the ledger held after 484 insertions.
+
+        Two dictations landed back to back with no space, so the first one's
+        last token read back as 'Unreal.Unreal'. Nobody fixed anything, and it
+        was scored as one word of two changed.
+        """
+        d = corrections.diff('Unreal Unreal.', 'Unreal Unreal.Unreal Unreal.')
+        self.assertTrue(d.clean)
+        self.assertFalse(corrections.looks_like_correction(d))
+
+    def test_text_typed_flush_against_our_full_stop_is_continuation(self):
+        d = corrections.diff('The build passed.', 'The build passed.Then I ran the tests.')
+        self.assertTrue(d.clean)
+
+    def test_repairing_our_last_word_is_still_a_correction(self):
+        """The unfusing must not swallow a fix to the final token."""
+        d = corrections.diff('We need a wrap.', 'We need a wrapper.')
+        self.assertEqual(corrections.term_pairs(d), [('wrap.', 'wrapper.')])
+        d = corrections.diff('Use version 2.', 'Use version 2.5.')
+        self.assertTrue(corrections.looks_like_correction(d))
+        self.assertEqual(d.distance, 1)
+
     def test_continuation_fused_into_the_final_word_is_still_peeled_off(self):
         """The cursor is left flush against our last token.
 
@@ -193,6 +216,27 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(s['correction_rate'], 0.0)
         self.assertEqual(s['fixes_count'], 0)
 
+    def test_a_row_an_older_diff_mistook_for_a_correction_stops_counting(self):
+        """Stored rows are scored under today's rules.
+
+        The real ledger's single row was two dictations typed back to back,
+        recorded as a correction before the diff could tell. It stays in the
+        ledger — that is what was observed — but it must not hold the rate at
+        one in nine.
+        """
+        ids = self._insert(9)
+        for i in ids:
+            self.store.mark_observed(i)
+        self.store.record_correction(
+            transcript_id=ids[0], source='observed', inserted='Unreal Unreal.',
+            corrected='Unreal Unreal.Unreal Unreal.', edit_distance=1, words=2,
+        )
+        s = self.store.correction_summary()
+        self.assertEqual(s['insertions'], 9)
+        self.assertEqual(s['corrected'], 0)
+        self.assertEqual(s['touch_rate'], 0.0)
+        self.assertEqual(len(self.store.corrections()), 1)
+
     def test_a_mix_of_measured_and_unmeasured_only_scores_the_measured(self):
         ids = self._insert(10)
         for i in ids[:4]:
@@ -224,6 +268,14 @@ class RelocateTests(unittest.TestCase):
         self.assertEqual(readback._relocate('hello world', '', ' world'), 'hello')
         self.assertEqual(readback._relocate('hello world', 'hello ', ''), 'world')
 
+    def test_repeated_anchor_pairs_are_ambiguous_not_guessed(self):
+        value = 'intro: first. intro: second.'
+        self.assertEqual(readback._locate(value, 'intro: ', '.'), ('ambiguous', None))
+        self.assertIsNone(readback._relocate(value, 'intro: ', '.'))
+        self.assertEqual(readback._locate('first. second.', '', '.'), ('ambiguous', None))
+        self.assertEqual(readback._locate('intro: first intro: second', 'intro: ', ''),
+                         ('ambiguous', None))
+
 
 class WatcherTests(unittest.TestCase):
     def setUp(self):
@@ -232,6 +284,7 @@ class WatcherTests(unittest.TestCase):
         self.tid = self.store.insert(
             text='we need a rapper for this', audio_seconds=3.0, inference_seconds=0.4,
             model='m', inject_method='accessibility', target_app='com.apple.Terminal',
+            observation_status='pending',
         )
         self._orig_focus = readback._focused_element
         self._orig_read = readback._read_value
@@ -274,6 +327,40 @@ class WatcherTests(unittest.TestCase):
         w.shutdown()
         self.assertEqual(self.store.corrections(), [])
 
+    def test_rewrite_and_deletion_are_measured_but_not_scored_clean(self):
+        for after, expected in (
+            ('Note: entirely different words appear. End.', 'rewrite'),
+            ('Note: . End.', 'deleted'),
+        ):
+            with self.subTest(expected=expected):
+                self.store._conn.execute(
+                    "UPDATE transcripts SET observation_status = 'pending', observed = 0 WHERE id = ?",
+                    (self.tid,),
+                )
+                self._fake_ax('Note: we need a rapper for this. End.', after)
+                w = readback.CorrectionWatcher(self.store, delay_s=0)
+                self.assertTrue(w.observe(self.tid, 'we need a rapper for this'))
+                s = self.store.correction_summary()
+                self.assertEqual(s['coverage']['outcomes'][expected], 1)
+                self.assertEqual(s['coverage']['measured'], 1)
+                self.assertEqual(s['insertions'], 0)
+                self.assertEqual(self.store.corrections(), [])
+
+    def test_ambiguous_initial_anchors_are_not_armed(self):
+        before = ('x' * readback._ANCHOR_CHARS + 'hi.') * 2
+        self._fake_ax(before, before)
+        w = readback.CorrectionWatcher(self.store, delay_s=0)
+        self.assertFalse(w.observe(self.tid, 'hi'))
+        self.assertEqual(self.store.correction_summary()['coverage']['outcomes']['ambiguous'], 1)
+        self.assertEqual(self.store.corrections(), [])
+
+    def test_ambiguous_later_anchors_are_not_counted_or_saved(self):
+        self._fake_ax('intro: hi. End.', 'intro: bye. intro: another. End.')
+        w = readback.CorrectionWatcher(self.store, delay_s=0)
+        self.assertTrue(w.observe(self.tid, 'hi'))
+        self.assertEqual(self.store.correction_summary()['coverage']['outcomes']['ambiguous'], 1)
+        self.assertEqual(self.store.corrections(), [])
+
     def test_a_clean_insertion_is_still_marked_as_measured(self):
         """Clean is a result. It only counts because we actually looked."""
         self._fake_ax('Note: we need a wrapper. End.', 'Note: we need a wrapper. End.')
@@ -281,6 +368,7 @@ class WatcherTests(unittest.TestCase):
         w.observe(self.tid, 'we need a wrapper')
         self.assertEqual(self.store.corrections(), [])
         self.assertEqual(self.store.correction_summary()['insertions'], 1)
+        self.assertEqual(self.store.correction_summary()['coverage']['outcomes']['clean'], 1)
 
     def test_a_field_that_vanished_leaves_the_insertion_unmeasured(self):
         readback._focused_element = lambda: object()
@@ -289,6 +377,7 @@ class WatcherTests(unittest.TestCase):
         w = readback.CorrectionWatcher(self.store, delay_s=0)
         w.observe(self.tid, 'we need a wrapper')
         self.assertEqual(self.store.correction_summary()['insertions'], 0)
+        self.assertEqual(self.store.correction_summary()['coverage']['outcomes']['unreadable'], 1)
 
     def test_a_span_we_cannot_find_is_never_observed(self):
         """If the app reformatted our text we cannot attribute later edits."""

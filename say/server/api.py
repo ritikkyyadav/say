@@ -579,13 +579,10 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
         request: Request,
         limit: int = Query(200, ge=1, le=2000),
     ) -> dict[str, Any]:
-        """The correction ledger + the rate derived from it.
+        """Corrections plus coverage/outcomes by app, including unscored edits.
 
-        Every layer between the mic and the document is a bet about what the
-        user meant; this is the only place that says whether the bets are
-        paying off. Exposed as an endpoint (not just a stat) because a
-        correction that was silently never captured and one that was captured
-        and found clean look identical from the summary alone.
+        Historical observations have unknown classification; a low-coverage
+        correction rate must never be mistaken for transcription accuracy.
         """
         _check_auth(app, request)
         store = app.state.store

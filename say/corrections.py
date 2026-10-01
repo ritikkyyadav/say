@@ -138,6 +138,36 @@ def _split_boundary_growth(
     return out
 
 
+_SENTENCE_END = '.!?…'
+
+
+def _unfuse_continuation(a: list[str], b: list[str]) -> list[str]:
+    """Split a token that was typed flush against our final word.
+
+    Say leaves the cursor directly after its closing full stop, so whatever
+    arrives next with no space in between fuses into our last token:
+    "Unreal." becomes "Unreal.Unreal". Tokenised as-is that is one changed
+    word, and the only correction this metric had ever recorded was exactly
+    that — a second dictation landing against the first, which nobody fixed.
+
+    Narrow on purpose. The fused token must begin with our last token intact,
+    our token must end a sentence, and what follows must start a new word.
+    "wrap." -> "wrapper." and "2." -> "2.5." are the user repairing our last
+    word, and both stay corrections.
+    """
+    if not a or not b:
+        return b
+    last = a[-1]
+    if last[-1:] not in _SENTENCE_END:
+        return b
+    for j in range(len(b) - 1, -1, -1):
+        tok = b[j]
+        rest = tok[len(last):]
+        if rest and tok.startswith(last) and rest[0].isalpha():
+            return b[:j] + [last, rest] + b[j + 1:]
+    return b
+
+
 def diff(inserted: str, corrected: str) -> Diff:
     """Word-level diff, with leading/trailing continuation excluded.
 
@@ -146,7 +176,7 @@ def diff(inserted: str, corrected: str) -> Diff:
     output and one that measures how talkative the user is afterwards.
     """
     a = tokenize(inserted)
-    b = tokenize(corrected)
+    b = _unfuse_continuation(a, tokenize(corrected))
     a_norm = [normalise(t) for t in a]
     b_norm = [normalise(t) for t in b]
 

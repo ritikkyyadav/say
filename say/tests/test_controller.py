@@ -345,6 +345,17 @@ class TranscriptDurabilityTests(unittest.TestCase):
         self.assertEqual(len(rows), 1, 'the transcript must survive a failed insert')
         self.assertFalse(rows[0].success)
         self.assertEqual(rows[0].text, 'Hello world.')
+        self.assertEqual(self.store.observation_summary()['successful'], 0)
+
+    def test_raw_decoder_text_and_effective_config_are_saved_locally(self):
+        self._run(lambda _: InjectionResult(True, 'accessibility'))
+        row = self.store._conn.execute('SELECT * FROM transcripts').fetchone()
+        self.assertEqual(row['raw_asr'], 'hello world')
+        self.assertEqual(row['text'], 'Hello world.')
+        self.assertEqual(len(row['pipeline_hash']), 64)
+        self.assertIsNotNone(row['pipeline_version'])
+        self.assertEqual(row['language'], config.LANGUAGE)
+        self.assertNotIn('raw_asr', self.store.list()[0].to_dict())
 
     def test_failed_injection_reaches_the_clipboard(self):
         controller = DictationController(
@@ -363,6 +374,12 @@ class TranscriptDurabilityTests(unittest.TestCase):
             controller.stop_recording()
         clip.assert_called_once()
         self.assertEqual(clip.call_args[0][0], 'Hello world.')
+
+    def test_disabled_readback_is_reported_not_left_pending(self):
+        with patch.object(config, 'LEARN_FROM_CORRECTIONS', False):
+            self._run(lambda _: InjectionResult(True, 'accessibility'))
+        self.assertEqual(self.store.observation_summary()['outcomes']['disabled'], 1)
+        self.assertEqual(self.store.correction_summary()['insertions'], 0)
 
     def test_successful_injection_marks_the_row_succeeded(self):
         self._run(lambda _: InjectionResult(True, 'clipboard'))
@@ -551,8 +568,13 @@ class LiveAudioGuardTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         store_module.reset_store_for_tests(os.path.join(self._tmp.name, 't.db'))
+        # Exercise the live-audio guard independently of the configurable
+        # minimum clip length (the real regression used a 0.63 s clip).
+        self._min_audio = patch.object(config, 'MIN_AUDIO_SECONDS', 0.4)
+        self._min_audio.start()
 
     def tearDown(self):
+        self._min_audio.stop()
         store_module.reset_store_for_tests(os.path.join(self._tmp.name, 't.db'))
         self._tmp.cleanup()
 

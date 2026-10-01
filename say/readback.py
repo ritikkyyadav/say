@@ -147,6 +147,7 @@ class CorrectionWatcher:
             return self._observe(transcript_id, inserted, target_app)
         except Exception:
             _log.debug('Correction read-back could not be armed', exc_info=True)
+            self._finish(transcript_id, 'unarmed')
             return False
 
     def shutdown(self) -> None:
@@ -159,28 +160,39 @@ class CorrectionWatcher:
                     p.timer.cancel()
                 except Exception:
                     pass
+            self._finish(p.transcript_id, 'dropped')
+            p.prefix = ''
+            p.suffix = ''
+            p.element = None
 
     # -- Internals ----------------------------------------------------------
 
     def _observe(
         self, transcript_id: int, inserted: str, target_app: str | None
     ) -> bool:
-        if not _enabled() or not inserted.strip() or not transcript_id:
+        if not transcript_id:
+            return False
+        if not _enabled():
+            self._finish(transcript_id, 'disabled')
+            return False
+        if not inserted.strip():
+            self._finish(transcript_id, 'unarmed')
             return False
 
         element = _focused_element()
         if element is None:
+            self._finish(transcript_id, 'unreadable')
             return False
         value = _read_value(element)
         if value is None:
+            self._finish(transcript_id, 'unreadable')
             return False
 
         # The cursor sits at the end of what we typed, so when the same text
         # appears more than once ours is the last occurrence.
         idx = value.rfind(inserted)
         if idx < 0:
-            # The app reformatted, or injection went somewhere we cannot see.
-            # Either way we cannot attribute later edits to our span.
+            self._finish(transcript_id, 'unlocatable')
             return False
 
         end = idx + len(inserted)
@@ -192,6 +204,13 @@ class CorrectionWatcher:
             prefix=value[max(0, idx - _ANCHOR_CHARS):idx],
             suffix=value[end:end + _ANCHOR_CHARS],
         )
+
+        # Reject repeated surrounding anchors before trusting even the initial
+        # snapshot: another occurrence could be wrongly attributed after edits.
+        initial_status, initial_region = _locate(value, pending.prefix, pending.suffix)
+        if initial_status != 'located' or initial_region != inserted:
+            self._finish(transcript_id, initial_status if initial_status != 'located' else 'ambiguous')
+            return False
 
         # A non-positive delay reads back inline. Production never does this —
         # the whole point is to wait for the user to react — but it makes the
@@ -210,6 +229,10 @@ class CorrectionWatcher:
                 dropped = self._pending.pop(0)
                 if dropped.timer is not None:
                     dropped.timer.cancel()
+                self._finish(dropped.transcript_id, 'dropped')
+                dropped.prefix = ''
+                dropped.suffix = ''
+                dropped.element = None
             self._pending.append(pending)
 
         timer.start()
@@ -224,6 +247,7 @@ class CorrectionWatcher:
             self._compare(pending)
         except Exception:
             _log.debug('Correction read-back failed', exc_info=True)
+            self._finish(pending.transcript_id, 'unreadable')
         finally:
             # Drop the document context the moment it has served its purpose.
             pending.prefix = ''
@@ -232,75 +256,68 @@ class CorrectionWatcher:
 
     def _compare(self, pending: _Pending) -> None:
         if not _enabled():
+            self._finish(pending.transcript_id, 'disabled')
             return
         value = _read_value(pending.element)
         if value is None:
+            self._finish(pending.transcript_id, 'unreadable')
             return
 
-        region = _relocate(value, pending.prefix, pending.suffix)
+        location, region = _locate(value, pending.prefix, pending.suffix)
         if region is None:
-            # The span could not be located, so this insertion was never
-            # actually measured. Leaving it unmarked keeps it out of the
-            # denominator — "we did not look" must never score as "clean".
+            self._finish(pending.transcript_id, location)
             return
-
-        # From here the insertion *has* been compared, clean or not. That is
-        # what makes it countable.
-        try:
-            self._store.mark_observed(pending.transcript_id)
-        except Exception:
-            _log.debug('Could not mark insertion observed', exc_info=True)
-
         if region == pending.inserted:
+            self._finish(pending.transcript_id, 'clean')
+            return
+        if not region.strip():
+            self._finish(pending.transcript_id, 'deleted')
             return
 
         import corrections
 
         d = corrections.diff(pending.inserted, region)
-        if not corrections.looks_like_correction(d):
-            return
+        if d.clean:
+            # Formatting-only changes are not vocabulary candidates, but are
+            # still measured. Boundary growth is continuation, not correction.
+            outcome = ('formatting_only' if len(corrections.tokenize(region)) == d.words
+                       else 'continuation')
+            self._finish(pending.transcript_id, outcome)
+        elif not corrections.looks_like_correction(d):
+            self._finish(pending.transcript_id, 'rewrite')
+        else:
+            self._finish(
+                pending.transcript_id, 'corrected', inserted=d.inserted,
+                corrected=d.corrected, edit_distance=d.distance, words=d.words,
+                target_app=pending.target_app,
+            )
+            _log.info('Correction observed on transcript %s: %d/%d words changed',
+                      pending.transcript_id, d.distance, d.words)
 
-        self._store.record_correction(
-            transcript_id=pending.transcript_id,
-            source='observed',
-            inserted=d.inserted,
-            corrected=d.corrected,
-            edit_distance=d.distance,
-            words=d.words,
-            target_app=pending.target_app,
-        )
-        # Info, not debug: this fires at most once per dictation and is the
-        # one line that tells you the measurement loop is actually closing.
-        _log.info(
-            'Correction observed on transcript %s: %d/%d words changed (%r -> %r)',
-            pending.transcript_id, d.distance, d.words,
-            d.inserted[:60], d.corrected[:60],
-        )
+    def _finish(self, transcript_id: int, outcome: str, **kwargs: Any) -> None:
+        try:
+            self._store.finish_observation(transcript_id, outcome, **kwargs)
+        except Exception:
+            _log.debug('Could not persist observation outcome', exc_info=True)
+
+
+def _locate(value: str, prefix: str, suffix: str) -> tuple[str, str | None]:
+    """Find exactly one anchor pair; refuse repeated candidates rather than guess."""
+    pos = value.find(prefix) if prefix else 0
+    found: str | None = None
+    while pos >= 0:
+        start = pos + len(prefix)
+        end = value.find(suffix, start) if suffix else len(value)
+        if end < 0:
+            # Later prefixes cannot find a suffix that this one could not.
+            break
+        if found is not None or (suffix and value.find(suffix, end + 1) >= 0):
+            return 'ambiguous', None
+        found = value[start:end]
+        pos = value.find(prefix, pos + 1) if prefix else -1
+    return ('located', found) if found is not None else ('unlocatable', None)
 
 
 def _relocate(value: str, prefix: str, suffix: str) -> str | None:
-    """Find what Say's span has become, using its surrounding anchors.
-
-    Returns None whenever the span cannot be located unambiguously. Giving up
-    is the correct outcome: a wrong region produces a fabricated correction,
-    which is worse than no data at all because everything downstream would
-    then learn from it.
-    """
-    if prefix:
-        start = value.find(prefix)
-        if start < 0:
-            return None
-        start += len(prefix)
-    else:
-        start = 0
-
-    if suffix:
-        end = value.find(suffix, start)
-        if end < 0:
-            return None
-    else:
-        end = len(value)
-
-    if end < start:
-        return None
-    return value[start:end]
+    """Compatibility helper: return only a uniquely located span."""
+    return _locate(value, prefix, suffix)[1]

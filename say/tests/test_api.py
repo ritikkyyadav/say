@@ -93,6 +93,29 @@ class ApiTests(unittest.TestCase):
         self.assertIn('total_words', body)
         self.assertGreaterEqual(body['total_words'], 2)
         self.assertEqual(body['fixes_count'], 0)
+        self.assertEqual(body['correction_coverage_rate'], 0)
+        self.assertEqual(body['correction_outcomes_30d'], {'unknown_historical': 1})
+
+    def test_corrections_expose_coverage_by_app_without_private_asr(self):
+        rid = self.store.insert(
+            text='post-processed text', raw_asr='raw voice text',
+            pipeline_hash='private-hash', observation_status='pending',
+            audio_seconds=2, inference_seconds=0.2, model='m',
+            inject_method='accessibility', target_app='com.apple.TextEdit',
+        )
+        self.store.finish_observation(rid, 'rewrite')
+        self.assertEqual(self.client.get('/corrections').status_code, 401)
+        response = self.client.get('/corrections?token=secret')
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        coverage = body['summary']['coverage']
+        self.assertEqual(coverage['successful'], 2)
+        self.assertEqual(coverage['measured'], 1)
+        self.assertEqual(coverage['outcomes']['rewrite'], 1)
+        self.assertEqual(coverage['by_app']['com.apple.TextEdit']['measured'], 1)
+        self.assertEqual(body['summary']['insertions'], 0)
+        self.assertNotIn('raw voice text', response.text)
+        self.assertNotIn('private-hash', response.text)
 
     def test_user_profile_returns_first_name(self):
         r = self.client.get('/user/profile?token=secret')
