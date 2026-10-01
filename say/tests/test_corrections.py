@@ -184,7 +184,7 @@ class StoreTests(unittest.TestCase):
         for i in ids:
             self.store.mark_observed(i)
         self.store.record_correction(
-            transcript_id=ids[0], source='manual', inserted='a rapper',
+            transcript_id=ids[0], source='observed', inserted='a rapper',
             corrected='a wrapper', edit_distance=1, words=2,
         )
         s = self.store.summary()

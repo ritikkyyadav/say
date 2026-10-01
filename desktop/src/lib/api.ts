@@ -47,6 +47,25 @@ export type Transcript = {
    *  playback without a probe request per row. False for everyone who has
    *  not opted into keeping audio. */
   has_audio: boolean;
+  /** Your own version of this transcript, if you have written one. `text`
+   *  stays what Say produced; equal to `text` means "checked, and right". */
+  corrected: string | null;
+  /** Set when a second model heard this clip differently and you have not
+   *  checked it yet. Where to look, not a verdict. */
+  review: { rank: number; differing_words: number } | null;
+};
+
+/** One correction: what Say typed and what it became. */
+export type Correction = {
+  id: number;
+  transcript_id: number;
+  ts_utc: string;
+  source: 'observed' | 'manual';
+  inserted: string;
+  corrected: string;
+  edit_distance: number;
+  words: number;
+  target_app: string | null;
 };
 
 export type ListenerState = {
@@ -435,6 +454,12 @@ export const api = {
       headers: authHeaders(ep),
     });
   },
+  // Your own version of a transcript. Saving the text unchanged is how you
+  // say "this one was right".
+  correctTranscript: (id: number, text: string) =>
+    sendJSON<Correction>('POST', `/transcripts/${id}/correction`, { text }),
+  clearTranscriptCorrection: (id: number) =>
+    sendJSON<{ deleted: boolean }>('DELETE', `/transcripts/${id}/correction`),
 
   // ── Language ──────────────────────────────────────────────────────────
   language: () => getJSON<LanguageConfig>('/language'),

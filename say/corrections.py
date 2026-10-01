@@ -243,6 +243,27 @@ def term_pairs(d: Diff) -> list[tuple[str, str]]:
     return pairs
 
 
+def word_errors(reference: str, hypothesis: str) -> tuple[int, int]:
+    """Words wrong in `hypothesis` against a trusted `reference`.
+
+    Returns `(errors, reference_words)`; their ratio is a word error rate.
+    This is for a *deliberate* reference — the user rewriting a transcript in
+    the app, or a labelled clip in the benchmark — so none of `diff()`'s
+    continuation rules apply: words added at the end are words we missed, not
+    the user typing on. Case and edge punctuation are still ignored, the same
+    way the rest of this module compares tokens.
+    """
+    ref = [normalise(t) for t in tokenize(reference)]
+    hyp = [normalise(t) for t in tokenize(hypothesis)]
+    matcher = SequenceMatcher(None, ref, hyp, autojunk=False)
+    errors = sum(
+        max(i2 - i1, j2 - j1)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes()
+        if tag != 'equal'
+    )
+    return errors, len(ref)
+
+
 @dataclass(frozen=True)
 class RateSummary:
     """Aggregate correction behaviour over a window of insertions."""

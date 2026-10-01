@@ -5,7 +5,7 @@
 // what you actually said — with playback on the row rather than behind
 // another destination.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, invalidateEngineEndpoint, RecordingsConfigPatch } from '../lib/api';
 import { bytes, fmt, greeting, hm, longDuration } from '../lib/format';
@@ -99,6 +99,8 @@ export function Home() {
   const qc = useQueryClient();
   const [query, setQuery] = useState('');
   const [shown, setShown] = useState(PAGE);
+  // Only the dictations a second model heard differently, most different first.
+  const [reviewing, setReviewing] = useState(false);
 
   const profile = useQuery({ queryKey: ['profile'], queryFn: api.profile });
   const summary = useQuery({ queryKey: ['summary'], queryFn: api.summary });
@@ -127,15 +129,28 @@ export function Home() {
   const s = summary.data;
 
   const filtered = useMemo(() => {
-    const rows = transcripts.data ?? [];
+    const all = transcripts.data ?? [];
+    const rows = reviewing
+      ? all.filter((r) => r.review).sort((a, b) => a.review!.rank - b.review!.rank)
+      : all;
     const q = query.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter(
       (r) =>
         r.text.toLowerCase().includes(q) ||
+        (r.corrected ?? '').toLowerCase().includes(q) ||
         (r.target_app ?? '').toLowerCase().includes(q),
     );
-  }, [transcripts.data, query]);
+  }, [transcripts.data, query, reviewing]);
+
+  const toReview = useMemo(
+    () => (transcripts.data ?? []).filter((r) => r.review).length,
+    [transcripts.data],
+  );
+  // The queue empties as you work through it; leave the mode when it does.
+  useEffect(() => {
+    if (reviewing && toReview === 0) setReviewing(false);
+  }, [reviewing, toReview]);
 
   const groups = useMemo(() => groupByDay(filtered.slice(0, shown)), [filtered, shown]);
   const spark = useMemo(() => (heat.data ?? []).slice(-30).map((c) => c.count), [heat.data]);
@@ -364,6 +379,26 @@ export function Home() {
               ))}
             </select>
           ) : null}
+          {toReview > 0 ? (
+            <label
+              style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--muted)', cursor: 'pointer' }}
+              title="Dictations a second model heard differently. Listen, then fix or confirm each one."
+            >
+              <button
+                className={reviewing ? 'sw on' : 'sw'}
+                onClick={() => {
+                  setReviewing((v) => !v);
+                  setShown(PAGE);
+                }}
+                role="switch"
+                aria-checked={reviewing}
+                aria-label="To review"
+              >
+                <i />
+              </button>
+              To review · {toReview}
+            </label>
+          ) : null}
           <div className="search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <circle cx="11" cy="11" r="7" />
@@ -399,7 +434,18 @@ export function Home() {
         </div>
       ) : (
         <>
-          {groups.map((g) => (
+          {reviewing ? (
+            <section>
+              <div className="daylab">
+                <span>Most in doubt first</span>
+                <i />
+              </div>
+              {filtered.slice(0, shown).map((row) => (
+                <TranscriptRow key={row.id} row={row} />
+              ))}
+            </section>
+          ) : (
+            groups.map((g) => (
             <section key={g.isoDate}>
               <div className="daylab">
                 <span>{g.label}</span>
@@ -409,7 +455,8 @@ export function Home() {
                 <TranscriptRow key={row.id} row={row} />
               ))}
             </section>
-          ))}
+            ))
+          )}
           {filtered.length > shown ? (
             <button className="more" onClick={() => setShown((n) => n + PAGE)}>
               Load older dictations — {fmt(filtered.length - shown)} more

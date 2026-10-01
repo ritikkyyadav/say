@@ -5,8 +5,14 @@
 // most rows `has_audio` is false and the control is simply disabled rather
 // than hidden: a row that silently loses its play button when you turn the
 // setting off looks broken.
+//
+// Fix lets you write your own version in place. That pair — what Say typed,
+// what you meant — is the one label that works in every app, including the
+// terminals and chat windows the read-back cannot see into. `row.text` is never
+// rewritten; the row shows your version and keeps Say's underneath.
 
 import { useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { api, Transcript } from '../lib/api';
 import { appLabel } from '../lib/appNames';
 import { mmss } from '../lib/format';
@@ -23,10 +29,19 @@ export function TranscriptRow({ row }: { row: Transcript }) {
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const qc = useQueryClient();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const urlRef = useRef<string | null>(null);
 
   const shape = bars(row.id);
+  // What the row shows and copies: your version when there is one.
+  const shown = row.corrected ?? row.text;
+  const fixed = row.corrected !== null && row.corrected !== row.text;
+  const checked = row.corrected !== null && row.corrected === row.text;
 
   useEffect(
     () => () => {
@@ -69,13 +84,43 @@ export function TranscriptRow({ row }: { row: Transcript }) {
   const copy = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await navigator.clipboard.writeText(row.text);
+      await navigator.clipboard.writeText(shown);
       setCopied(true);
       setTimeout(() => setCopied(false), 1400);
     } catch {
       /* clipboard unavailable — nothing useful to say about it */
     }
     api.copyTranscript(row.id).catch(() => {});
+  };
+
+  const startFix = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDraft(shown);
+    setFailed(false);
+    setEditing(true);
+    setOpen(true);
+  };
+
+  const settle = async (work: () => Promise<unknown>) => {
+    setSaving(true);
+    setFailed(false);
+    try {
+      await work();
+      await qc.invalidateQueries({ queryKey: ['transcripts'] });
+      setEditing(false);
+    } catch {
+      setFailed(true);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const save = () => settle(() => api.correctTranscript(row.id, draft));
+  const undo = () => settle(() => api.clearTranscriptCorrection(row.id));
+
+  const onEditKey = (e: React.KeyboardEvent) => {
+    e.stopPropagation();
+    if (e.key === 'Escape') setEditing(false);
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && draft.trim()) save();
   };
 
   const cursor = Math.floor(progress * shape.length);
@@ -88,7 +133,7 @@ export function TranscriptRow({ row }: { row: Transcript }) {
   return (
     <div
       className={`trow${open ? ' open' : ''}${playing ? ' playing' : ''}`}
-      onClick={() => setOpen((v) => !v)}
+      onClick={() => !editing && setOpen((v) => !v)}
     >
       <button
         className="play"
@@ -118,8 +163,59 @@ export function TranscriptRow({ row }: { row: Transcript }) {
           {mmss(row.audio_seconds)}
           <i className="sep" />
           {row.word_count} words
+          {row.review && !fixed && !checked && (
+            <>
+              <i className="sep" />
+              <span className="tfix" title="A second model wrote this differently">
+                {row.review.differing_words} {row.review.differing_words === 1 ? 'word' : 'words'} in doubt
+              </span>
+            </>
+          )}
+          {(fixed || checked) && (
+            <>
+              <i className="sep" />
+              <span className="tfix">{fixed ? 'fixed by you' : 'checked'}</span>
+            </>
+          )}
         </div>
-        <div className="ttext">{row.text}</div>
+        {editing ? (
+          <div onClick={(e) => e.stopPropagation()}>
+            <textarea
+              className="tedit"
+              value={draft}
+              autoFocus
+              spellCheck
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={onEditKey}
+              aria-label="Your version of this transcript"
+            />
+            <div className="tedit-bar">
+              <button className="ghost solid" onClick={save} disabled={saving || !draft.trim()}>
+                {draft.trim() === row.text.trim() ? 'It was right' : 'Save'}
+              </button>
+              <button className="ghost" onClick={() => setEditing(false)} disabled={saving}>
+                Cancel
+              </button>
+              {row.corrected !== null && (
+                <button className="ghost" onClick={undo} disabled={saving}>
+                  Remove my version
+                </button>
+              )}
+              {failed ? (
+                <span className="err">Could not save. The engine did not answer.</span>
+              ) : (
+                <span className="hint">⌘↩ to save · Esc to cancel</span>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="ttext">{shown}</div>
+        )}
+        {fixed && !editing && (
+          <div className="torig">
+            <b>Say typed:</b> {row.text}
+          </div>
+        )}
         <div className="wave">
           {shape.map((h, k) => (
             <i
@@ -145,6 +241,15 @@ export function TranscriptRow({ row }: { row: Transcript }) {
             </>
           )}
         </button>
+        {!editing && (
+          <button className="ghost" onClick={startFix} title="Write what you actually said">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <path d="M4 20h4L19 9l-4-4L4 16v4z" />
+              <path d="M13.5 6.5l4 4" />
+            </svg>
+            Fix
+          </button>
+        )}
       </div>
     </div>
   );

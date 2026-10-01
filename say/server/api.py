@@ -89,6 +89,17 @@ class RecordingsConfigRequest(BaseModel):
     retention_days: int | None = None
     max_bytes: int | None = None
 
+
+class CorrectionRequest(BaseModel):
+    """Body for POST /transcripts/{id}/correction — the user's own version."""
+
+    text: str
+
+
+# A transcript of the longest allowed recording is well under this; anything
+# larger is not a correction of one.
+_MAX_CORRECTION_CHARS = 100_000
+
 _log = logging.getLogger('say.server.api')
 
 # Tauri serves the production UI from a custom protocol; allow it plus the dev origin.
@@ -335,9 +346,29 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
         _check_auth(app, request)
         rows = app.state.store.list(limit=limit, before=before)
         store = app.state.store
+        try:
+            fixed = store.manual_corrections()
+        except Exception:
+            fixed = {}
+        try:
+            import review_queue
+
+            queue = review_queue.load(store)
+        except Exception:
+            queue = {}
         out: list[dict[str, Any]] = []
         for row in rows:
             item = row.to_dict()
+            # The user's own version, when they have written one. `text` stays
+            # what Say produced; the feed shows this in its place.
+            item['corrected'] = fixed.get(row.id)
+            # Where a second model heard this clip differently. A row the user
+            # has already checked has left the queue, whatever the file says.
+            entry = queue.get(row.id) if row.id not in fixed else None
+            item['review'] = (
+                {'rank': entry['rank'], 'differing_words': entry['differing_words']}
+                if entry else None
+            )
             # The transcripts feed carries its own playback, so it needs to
             # know which rows actually have a clip behind them. Saving audio is
             # opt-in, so for most people this is False everywhere.
@@ -515,6 +546,35 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
     async def copy_transcript(transcript_id: int, request: Request) -> Response:
         _check_auth(app, request)
         return Response(status_code=204)
+
+    # Declared `def`, not `async def`: aligning a long transcript against its
+    # correction is CPU-bound, and on the event loop it would stall /health
+    # and the SSE stream for as long as it ran (see /stats/vocabulary).
+    @app.post('/transcripts/{transcript_id}/correction')
+    def set_transcript_correction(
+        transcript_id: int, body: CorrectionRequest, request: Request
+    ) -> dict[str, Any]:
+        """Save the user's own version of a transcript.
+
+        The label source that does not depend on the read-back: it works in
+        every app, including the ones that expose no text to Accessibility.
+        Saving the text unchanged records that it was checked and was right.
+        """
+        _check_auth(app, request)
+        text = body.text.strip()
+        if not text:
+            raise HTTPException(status_code=400, detail='A correction needs some text')
+        if len(text) > _MAX_CORRECTION_CHARS:
+            raise HTTPException(status_code=400, detail='That is too long to be a correction')
+        saved = app.state.store.set_manual_correction(transcript_id, text)
+        if saved is None:
+            raise HTTPException(status_code=404, detail='No such transcript')
+        return saved
+
+    @app.delete('/transcripts/{transcript_id}/correction')
+    def clear_transcript_correction(transcript_id: int, request: Request) -> dict[str, bool]:
+        _check_auth(app, request)
+        return {'deleted': app.state.store.clear_manual_correction(transcript_id)}
 
     # ── Model management ─────────────────────────────────────────────────
 

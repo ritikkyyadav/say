@@ -417,6 +417,87 @@ class TranscriptStore:
             )
             self._conn.commit()
 
+    # -- Manual corrections: the user's own version, written from the app --
+
+    def set_manual_correction(
+        self, transcript_id: int, corrected: str
+    ) -> dict[str, Any] | None:
+        """Store the user's version of a transcript. None if the id is unknown.
+
+        One per transcript: saving again replaces the earlier one. The
+        transcript's own text is never rewritten — what Say produced is the
+        evidence, and the pair is what the benchmark and the vocabulary
+        suggestions are built from. Saving the text unchanged is meaningful
+        too: it records that someone checked this one and it was right.
+        """
+        from corrections import tokenize, word_errors
+
+        ts = datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z')
+        with self._lock:
+            row = self._conn.execute(
+                'SELECT text, target_app FROM transcripts WHERE id = ?', (int(transcript_id),)
+            ).fetchone()
+            if row is None:
+                return None
+            errors, _ = word_errors(corrected, row['text'])
+            with self._conn:
+                self._conn.execute(
+                    "DELETE FROM corrections WHERE transcript_id = ? AND source = 'manual'",
+                    (int(transcript_id),),
+                )
+                cur = self._conn.execute(
+                    '''INSERT INTO corrections
+                       (transcript_id, ts_utc, source, inserted, corrected,
+                        edit_distance, words, target_app)
+                       VALUES (?, ?, 'manual', ?, ?, ?, ?, ?)''',
+                    (int(transcript_id), ts, row['text'], corrected, int(errors),
+                     len(tokenize(row['text'])), row['target_app']),
+                )
+            saved = self._conn.execute(
+                'SELECT * FROM corrections WHERE id = ?', (int(cur.lastrowid or 0),)
+            ).fetchone()
+        return dict(saved) if saved is not None else None
+
+    def clear_manual_correction(self, transcript_id: int) -> bool:
+        """Remove the user's version of a transcript. True if there was one."""
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute(
+                    "DELETE FROM corrections WHERE transcript_id = ? AND source = 'manual'",
+                    (int(transcript_id),),
+                )
+            return cur.rowcount > 0
+
+    def manual_corrections(self) -> dict[int, str]:
+        """`transcript_id -> the user's version`, for every transcript that has one."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT transcript_id, corrected FROM corrections WHERE source = 'manual'"
+            ).fetchall()
+        return {int(r['transcript_id']): r['corrected'] for r in rows}
+
+    def review_summary(self) -> dict[str, Any]:
+        """What the user's own corrections say, kept apart from the read-back rate.
+
+        These clips are chosen for review *because* they look wrong, so their
+        error rate describes the reviewed clips and nothing else. Folding it
+        into `correction_summary()` would report a selected sample as the
+        whole.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT edit_distance, words FROM corrections WHERE source = 'manual'"
+            ).fetchall()
+        words = sum(int(r['words']) for r in rows)
+        edited = sum(int(r['edit_distance']) for r in rows)
+        return {
+            'reviewed': len(rows),
+            'confirmed_right': sum(1 for r in rows if int(r['edit_distance']) == 0),
+            'words': words,
+            'edited_words': edited,
+            'word_rate': round(edited / words, 4) if words else 0.0,
+        }
+
     def corrections(
         self, *, limit: int | None = 200, since: str | None = None
     ) -> list[dict[str, Any]]:
@@ -465,7 +546,8 @@ class TranscriptStore:
             rows = self._conn.execute(
                 '''SELECT c.inserted, c.corrected FROM corrections c
                    JOIN transcripts t ON t.id = c.transcript_id
-                   WHERE t.success = 1 AND t.observed = 1 AND t.ts_utc >= ?
+                   WHERE c.source = 'observed'
+                     AND t.success = 1 AND t.observed = 1 AND t.ts_utc >= ?
                      AND (t.observation_status IS NULL OR t.observation_status = 'corrected')''',
                 (cutoff,),
             ).fetchall()
@@ -491,6 +573,7 @@ class TranscriptStore:
             'touch_rate': round(rate.touch_rate, 4),
             'word_rate': round(rate.word_rate, 4),
             'coverage': self.observation_summary(days=days, today=today),
+            'review': self.review_summary(),
         }
 
     def observation_summary(self, *, days: int = 30, today: date | None = None) -> dict[str, Any]:
