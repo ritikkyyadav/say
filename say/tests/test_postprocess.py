@@ -440,3 +440,34 @@ class AuditedReplacementsTests(_ConfigPatch):
             postprocess.apply_replacements("dig into the code, base now"),
             "dig into the codebase now",
         )
+
+
+class OtherScriptsTests(_ConfigPatch):
+    """Say is used to dictate Hindi and Urdu as well as English. A Latin full
+    stop after a danda is a mistake typed into someone else's language."""
+
+    def test_a_hindi_sentence_keeps_its_danda_and_gains_nothing(self):
+        text = 'मुझे कल सुबह दस बजे बैठक में जाना है।'
+        self.assertEqual(postprocess.apply(text), text)
+
+    def test_an_urdu_sentence_keeps_its_own_full_stop(self):
+        text = 'مجھے کل صبح دس بجے میٹنگ میں جانا ہے۔'
+        self.assertEqual(postprocess.apply(text), text)
+
+    def test_hindi_with_no_ending_is_left_as_the_decoder_wrote_it(self):
+        text = 'मुझे कल सुबह बैठक में जाना है'
+        self.assertEqual(postprocess.ensure_terminal_punctuation(text), text)
+
+    def test_english_still_gets_its_full_stop(self):
+        self.assertEqual(postprocess.ensure_terminal_punctuation('send the report'), 'send the report.')
+
+    def test_cyrillic_greek_and_vietnamese_close_with_a_full_stop_too(self):
+        for text in ('Отправь отчёт сегодня', 'Στείλε την αναφορά', 'Gửi báo cáo hôm nay nhé'):
+            self.assertEqual(postprocess.ensure_terminal_punctuation(text), text + '.')
+
+    def test_a_hindi_name_at_the_end_of_dictation_is_not_stripped_as_a_tail(self):
+        text = 'Please send the report to रवि'
+        self.assertEqual(postprocess.clean_hallucinated_tail(text), text)
+
+    def test_text_ending_in_a_number_is_punctuated_as_before(self):
+        self.assertEqual(postprocess.ensure_terminal_punctuation('call me at 10'), 'call me at 10.')

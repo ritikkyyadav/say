@@ -496,6 +496,26 @@ def fix_capitalisation(text: str) -> str:
     return text[:1].upper() + text[1:]
 
 
+# Sentence endings in scripts that do not close with a Latin full stop: the
+# Devanagari danda and double danda, the Arabic-script full stop and question
+# mark, and the CJK stops.
+_NATIVE_TERMINATORS = '।॥۔؟。！？'
+
+
+def _closes_with_a_full_stop(text: str) -> bool:
+    """Whether "." is the right ending for the script this text ends in.
+
+    Latin, Greek and Cyrillic close a sentence with ".". Hindi closes with a
+    danda, Urdu with its own stop, Thai with nothing at all — and a "." typed
+    after any of those is simply a mistake in someone else's language.
+    """
+    for ch in reversed(text):
+        if ch.isalpha():
+            cp = ord(ch)
+            return cp < 0x0530 or 0x1E00 <= cp <= 0x1EFF
+    return True
+
+
 def ensure_terminal_punctuation(text: str) -> str:
     """Give the last sentence an ending, unless one would be wrong."""
     if not text:
@@ -503,9 +523,13 @@ def ensure_terminal_punctuation(text: str) -> str:
     stripped = text.rstrip()
     if not stripped:
         return text
-    if stripped[-1] in '.!?"\')…':
+    if stripped[-1] in '.!?"\')…' or stripped[-1] in _NATIVE_TERMINATORS:
         return stripped
     if _NO_TERMINAL_PUNCT.search(stripped):
+        return stripped
+    if not _closes_with_a_full_stop(stripped):
+        # We do not know this script's conventions well enough to punctuate
+        # it. Leaving the text as the decoder wrote it is never wrong.
         return stripped
     return stripped + '.'
 
