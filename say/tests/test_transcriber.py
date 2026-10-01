@@ -183,3 +183,55 @@ class RealtimeWarningTests(unittest.TestCase):
         with self.assertLogs('say.transcriber', level='INFO') as logs:
             transcriber.note_realtime(0.4, 19.2, 'whisper')
         self.assertFalse(any('WARNING' in line for line in logs.output))
+
+
+class SilenceGateTests(unittest.TestCase):
+    """Silence is never handed to the decoder, which answers it with invented
+    text. 33 of 484 stored insertions were of that kind ('Monica Monica.')."""
+
+    def _transcriber(self):
+        import numpy as np
+
+        calls = []
+        t = transcriber.Transcriber('mlx-community/whisper-small-mlx')
+        t._loaded = True
+        t._backend = 'whisper-mlx'
+
+        def fake(audio, prompt_override=None):
+            calls.append(len(audio))
+            return 'hello world'
+
+        t._transcribe_whisper = fake
+        return t, calls, np
+
+    def test_digital_silence_is_not_decoded(self):
+        t, calls, np = self._transcriber()
+        self.assertEqual(t.transcribe(np.zeros(16000 * 3, dtype=np.float32)), '')
+        self.assertEqual(calls, [])
+
+    def test_room_tone_below_the_floor_is_not_decoded(self):
+        t, calls, np = self._transcriber()
+        rng = np.random.default_rng(0)
+        quiet = (rng.standard_normal(16000 * 3) * transcriber._SILENCE_RMS * 0.5)
+        self.assertEqual(t.transcribe(quiet.astype(np.float32)), '')
+        self.assertEqual(calls, [])
+
+    def test_speech_level_audio_is_decoded(self):
+        t, calls, np = self._transcriber()
+        rng = np.random.default_rng(0)
+        # 0.0084 is the 5th-percentile RMS of real stored dictations.
+        voiced = (rng.standard_normal(16000 * 3) * 0.0084).astype(np.float32)
+        self.assertEqual(t.transcribe(voiced), 'hello world')
+        self.assertEqual(len(calls), 1)
+
+    def test_a_long_clip_with_one_short_utterance_is_decoded(self):
+        """Whole-piece RMS dilutes with silence, so the floor has to leave
+        room for a short phrase inside a long hold."""
+        t, calls, np = self._transcriber()
+        rng = np.random.default_rng(0)
+        clip = np.zeros(16000 * 30, dtype=np.float32)
+        clip[:16000 * 2] = rng.standard_normal(16000 * 2) * 0.0224  # corpus median
+        self.assertEqual(t.transcribe(clip), 'hello world')
+
+    def test_an_unmeasurable_buffer_is_decoded_not_dropped(self):
+        self.assertFalse(transcriber._is_silent(object()))

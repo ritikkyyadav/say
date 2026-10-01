@@ -58,7 +58,10 @@ SAMPLE_RATE = 16000            # Whisper expects 16 kHz mono audio
 # default (15 min) so normal long-form dictation is never clipped mid-sentence;
 # raise it (user-overridable via settings) if you routinely dictate longer.
 MAX_RECORDING_SECONDS = 900
-MIN_AUDIO_SECONDS = 0.4        # Shorter clips are ignored
+# Shorter clips are ignored. 0.4 until Oct 2026: of the 20 stored dictations
+# under one second, 19 were decoder inventions ("Monica Monica.", "CALD C.")
+# and one was a single word. A tap that short is an accident, not a dictation.
+MIN_AUDIO_SECONDS = 1.0
 
 # Pre-roll: amount of audio captured *before* the hotkey-down moment that
 # is prepended to the recording. Eliminates first-syllable clipping

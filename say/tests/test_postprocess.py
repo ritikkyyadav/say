@@ -321,3 +321,122 @@ class LengthScaledRunTests(_ConfigPatch):
         self.assertEqual(postprocess._run_threshold(4), 4)
         self.assertEqual(postprocess._run_threshold(8), 3)
         self.assertEqual(postprocess._run_threshold(12), 2)
+
+
+class TailCleanerTests(unittest.TestCase):
+    def test_strips_trailing_guillemets(self):
+        text = "And show me the output. There is nothing else you have to do. »."
+        self.assertEqual(
+            postprocess.clean_hallucinated_tail(text),
+            "And show me the output. There is nothing else you have to do.",
+        )
+
+    def test_strips_multi_layered_guillemets_and_thank_you(self):
+        text = "what actually has happened? ». ». Thank you. What? ». Thank you."
+        cleaned = postprocess.clean_hallucinated_tail(text)
+        self.assertNotIn("»", cleaned)
+        self.assertNotIn("Thank you", cleaned)
+
+    def test_strips_foreign_script_tail_on_latin_text(self):
+        text1 = "What is the command to create a folder in macOS. 의의의."
+        self.assertEqual(
+            postprocess.clean_hallucinated_tail(text1),
+            "What is the command to create a folder in macOS.",
+        )
+        text2 = "so that the agent can decide what to do in the future. Reավ."
+        self.assertEqual(
+            postprocess.clean_hallucinated_tail(text2),
+            "so that the agent can decide what to do in the future.",
+        )
+
+    def test_preserves_short_legitimate_thank_you(self):
+        self.assertEqual(postprocess.clean_hallucinated_tail("Thank you."), "Thank you.")
+        self.assertEqual(postprocess.clean_hallucinated_tail("Thank you so much."), "Thank you so much.")
+
+    def test_a_single_closing_thank_you_is_the_users_and_is_kept(self):
+        text = "Please review the change and merge it today. Thank you."
+        self.assertEqual(postprocess.clean_hallucinated_tail(text), text)
+
+    def test_a_repeated_thank_you_collapses_to_one(self):
+        # Stored rows 104 and 212 ended this way.
+        self.assertEqual(
+            postprocess.clean_hallucinated_tail("I think so, yeah. Thank you. Thank you. Thank you."),
+            "I think so, yeah. Thank you.",
+        )
+        self.assertEqual(
+            postprocess.clean_hallucinated_tail("Nothing. Thank you. Thank you."),
+            "Nothing. Thank you.",
+        )
+
+    def test_an_outro_nobody_dictates_is_stripped(self):
+        self.assertEqual(
+            postprocess.clean_hallucinated_tail("That is the whole plan for today. Thanks for watching."),
+            "That is the whole plan for today.",
+        )
+
+    def test_the_sentence_before_a_guillemet_keeps_its_full_stop(self):
+        self.assertTrue(
+            postprocess.clean_hallucinated_tail("There is nothing else you have to do. ».").endswith("do.")
+        )
+
+    def test_a_guillemet_followed_by_real_dictation_is_not_a_tail(self):
+        text = "He wrote « " + "and then the meeting carried on for another nine words at least."
+        self.assertEqual(postprocess.clean_hallucinated_tail(text), text)
+
+    def test_text_in_another_script_is_left_alone(self):
+        # Not predominantly Latin, so nothing here is a "foreign tail".
+        self.assertEqual(postprocess.clean_hallucinated_tail("Μου μου."), "Μου μου.")
+
+
+class ReplacementSeparatorTests(_ConfigPatch):
+    """The separator between a phrase's words was once written `[,\\\\s]+` in a
+    raw string: a class of comma, backslash and the letter s. Nothing errored;
+    every multi-word replacement simply stopped matching."""
+
+    def test_a_two_word_phrase_matches_across_plain_whitespace(self):
+        config.DICTIONARY_REPLACEMENTS = {'cloud code': 'Claude Code'}
+        self.assertEqual(
+            postprocess.apply_replacements('open cloud code and cloud  code again'),
+            'open Claude Code and Claude Code again',
+        )
+
+    def test_the_separator_is_not_the_letter_s(self):
+        config.DICTIONARY_REPLACEMENTS = {'code base': 'codebase'}
+        self.assertEqual(postprocess.apply_replacements('codesbase'), 'codesbase')
+
+    def test_longer_phrases_win_over_their_own_prefix(self):
+        config.DICTIONARY_REPLACEMENTS = {'s50': 'STT', 's50 models': 'STT models'}
+        self.assertEqual(postprocess.apply_replacements('these s50 models'), 'these STT models')
+
+
+class AuditedReplacementsTests(_ConfigPatch):
+    def test_replaces_technical_homophones(self):
+        config.DICTIONARY_REPLACEMENTS = {
+            'cloud code': 'Claude Code',
+            'ea agent': 'AI agent',
+            's50 models': 'STT models',
+            'front-views models': 'frontier models',
+            'onto that rapport': 'onto that repo',
+            "it's called, see": "It's called Say",
+            'package for the nga': 'package for the engineer',
+            'gohercel': 'Vercel',
+        }
+        raw = "It's called, see, using open source s50 models and cloud code."
+        out = postprocess.apply_replacements(raw)
+        self.assertIn("It's called Say", out)
+        self.assertIn("open source STT models", out)
+        self.assertIn("Claude Code", out)
+
+    def test_flexible_inter_word_spacing_and_commas(self):
+        config.DICTIONARY_REPLACEMENTS = {
+            "it's called see": "It's called Say",
+            "code base": "codebase",
+        }
+        self.assertEqual(
+            postprocess.apply_replacements("it's called, see, a tool"),
+            "It's called Say, a tool",
+        )
+        self.assertEqual(
+            postprocess.apply_replacements("dig into the code, base now"),
+            "dig into the codebase now",
+        )

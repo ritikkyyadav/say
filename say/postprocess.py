@@ -262,10 +262,109 @@ def _match_case(replacement: str, observed: str) -> str:
     return replacement
 
 
+# Longest run of words after a guillemet that is still treated as hallucinated
+# tail. The two real rows that carry one have 0 and 5 words after it.
+_GUILLEMET_TAIL_MAX_WORDS = 8
+
+
+def clean_hallucinated_tail(text: str) -> str:
+    """Strip trailing hallucination artifacts often emitted by Whisper on silence.
+
+    Catches:
+      - Trailing guillemets: '»', '«'
+      - Trailing foreign script fragments (Hangul, Armenian, Greek, etc.) appended
+        to predominantly Latin-script English dictations.
+      - Trailing repeated YouTube outro phrases ('Thank you.', 'Thanks for watching.')
+        when appended to a longer dictation.
+    """
+    if not text:
+        return text
+
+    out = text.rstrip()
+
+    for _ in range(5):
+        prev = out
+
+        # 1. A guillemet is where the decoder left the speech. Cut from the
+        #    first one when only a few words follow it — in the stored corpus
+        #    that tail is always more hallucination ("». Thank you. What? »."),
+        #    never dictation. The cut starts at the guillemet, so the sentence
+        #    before it keeps its own full stop.
+        mark = re.search(r'\s*[»«]', out)
+        if mark is not None:
+            tail_words = sum(
+                1 for tok in out[mark.start():].split() if any(ch.isalnum() for ch in tok)
+            )
+            if tail_words <= _GUILLEMET_TAIL_MAX_WORDS:
+                out = out[:mark.start()].rstrip()
+
+        # 2. If text is predominantly Latin (>75%), strip trailing non-Latin fragments
+        alpha_chars = [c for c in out if c.isalpha()]
+        if alpha_chars:
+            latin_count = sum(1 for c in alpha_chars if ord(c) < 0x024F)
+            if latin_count / len(alpha_chars) >= 0.75:
+                out = re.sub(
+                    r'(\s+(?:Re)?[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF\u0530-\u058F\u0370-\u03FF]+[\s.,!?;:]*)+$',
+                    '',
+                    out,
+                ).rstrip()
+                out = re.sub(
+                    r'[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF\u0530-\u058F\u0370-\u03FF]+[\s.,!?;:]*$',
+                    '',
+                    out,
+                ).rstrip()
+
+        # 3. Outros nobody dictates are always the decoder's: strip them from
+        #    the tail of anything long enough to be a real dictation.
+        words = out.split()
+        if len(words) >= 5:
+            out = re.sub(
+                r'([.!?]\s*)(?:thanks for watching|please like and subscribe)[.!? ]*$',
+                r'\1',
+                out,
+                flags=re.IGNORECASE,
+            ).rstrip()
+
+        # 4. "Thank you." is something people do say, so a single one is left
+        #    alone — dropping the user's words is worse than keeping a stray
+        #    courtesy. Only a *repeated* run is treated as hallucinated, and it
+        #    collapses to one. Both stored cases were repeats.
+        out = re.sub(
+            r'((?:^|[.!?]\s+)thank you(?:\s+so much)?[.!?]*)'
+            r'(?:\s+thank you(?:\s+so much)?[.!?]*)+\s*$',
+            r'\1',
+            out,
+            flags=re.IGNORECASE,
+        ).rstrip()
+
+        if out == prev:
+            break
+
+    return out
+
+
 def apply_replacements(text: str) -> str:
-    """Literal, user-defined substitutions. Whole-word, case-insensitive."""
-    for wrong, right in _replacements().items():
-        pattern = r'\b' + re.escape(wrong) + r'\b'
+    """Literal, user-defined substitutions. Whole-word, case-insensitive.
+
+    Matches longer multi-word phrases first, and allows natural speech pauses/commas
+    between words in multi-word phrases (e.g. 'it's called, see' matches 'it's called see').
+    """
+    replacements = _replacements()
+    if not replacements:
+        return text
+
+    for wrong, right in sorted(replacements.items(), key=lambda item: -len(item[0])):
+        words = wrong.split()
+        if len(words) > 1:
+            escaped_words = [re.escape(w) for w in words]
+            # Flexible spacing allowing commas or pauses between words in phrase
+            body = r'[,\s]+'.join(escaped_words)
+        else:
+            body = re.escape(wrong)
+
+        start_b = r'\b' if wrong[:1].isalnum() or wrong[:1] == '_' else ''
+        end_b = r'\b' if wrong[-1:].isalnum() or wrong[-1:] == '_' else ''
+        pattern = start_b + body + end_b
 
         def _swap(m: re.Match[str], r: str = right) -> str:
             return _match_case(r, m.group(0))
@@ -463,6 +562,7 @@ def apply(text: str, target_app: str | None = None) -> str:
                 'the clip probably contained little or no speech',
                 len(text.split()), len(out.split()),
             )
+        out = clean_hallucinated_tail(out)
         out = apply_replacements(out)
         out = apply_fuzzy_terms(out)
         out = fix_whitespace(out)

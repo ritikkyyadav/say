@@ -138,6 +138,30 @@ def note_realtime(audio_seconds: float, elapsed: float, backend: str) -> float:
 # enough clips have plenty of acoustic evidence and benefit from the seed.
 _STYLE_SEED_MIN_SECONDS = 2.0
 
+# Whole-piece RMS below which nothing is decoded at all. Whisper does not
+# return '' for silence, it invents text ("Monica Monica.", "Three programs."),
+# and the phrase filter can only catch inventions it has seen before. Measured
+# over 482 stored dictations: every clip under this level produced garbage
+# (most are digital silence from a stream that had not started delivering),
+# and the quietest genuine long dictation sits 3.7x above it. It is checked
+# here, not in the controller, because streaming segments and whole clips
+# both come through `transcribe()`.
+_SILENCE_RMS = 0.0015
+
+
+def _is_silent(audio: Any) -> bool:
+    """True when the piece carries no energy worth decoding. Never raises."""
+    try:
+        import numpy as np
+
+        arr = np.asarray(audio, dtype=np.float32)
+        if arr.size == 0:
+            return True
+        return float(np.sqrt(np.mean(arr ** 2))) < _SILENCE_RMS
+    except Exception:
+        # An audio buffer we cannot measure is decoded as before.
+        return False
+
 
 def _asr_prompt(audio_seconds: float | None = None) -> str:
     """Decoder bias string: style seed + user vocabulary + user prompt.
@@ -405,6 +429,10 @@ class Transcriber:
 
         min_samples = int(config.MIN_AUDIO_SECONDS * config.SAMPLE_RATE)
         if len(audio) < min_samples:
+            return ''
+
+        if _is_silent(audio):
+            _log.info('Audio below the speech floor; skipping decode')
             return ''
 
         if self._backend == 'moonshine':
