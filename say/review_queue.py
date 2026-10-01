@@ -52,11 +52,13 @@ def rank(
 ) -> list[dict[str, Any]]:
     """Order clips by how much two decodes of the same audio disagree.
 
-    Each clip carries `id`, `stored` and `other` text. Sorted by the number of
-    differing words, then by their share: a long dictation with ten wrong words
-    is more worth fixing than a short one with two, and among equals the one
-    that is mostly wrong comes first. Clips the two decodes agree on are left
-    out — there is nothing to check.
+    Each clip carries `id`, `stored` and `other` text. Sorted by the *share* of
+    words that differ, then by their number. Checking a clip costs its length
+    in listening, so share is doubt per second spent. Sorting by the count
+    alone was tried first and, on a real corpus, simply sorted by duration:
+    two models differ on small words everywhere, so the longest clip always
+    had the most. Clips the two decodes agree on are left out — there is
+    nothing to check.
     """
     out: list[dict[str, Any]] = []
     for clip in clips:
@@ -65,11 +67,13 @@ def rank(
             continue
         out.append({
             'id': int(clip['id']),
-            'differing_words': errors,
+            # The second decode can be longer than the stored one, and "64 of
+            # 59 words" is not something to show anyone.
+            'differing_words': min(errors, words),
             'words': words,
             'share': round(min(1.0, errors / words), 4),
         })
-    out.sort(key=lambda e: (-e['differing_words'], -e['share'], e['id']))
+    out.sort(key=lambda e: (-e['share'], -e['differing_words'], e['id']))
     out = out[: max(0, int(limit))]
     for position, entry in enumerate(out, 1):
         entry['rank'] = position

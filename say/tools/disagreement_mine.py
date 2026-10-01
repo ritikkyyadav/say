@@ -46,16 +46,50 @@ from server.store import get_store  # noqa: E402
 # Imported by name so the type checker does not see one file as two modules.
 replay_bench = import_module('tools.replay_bench')
 
-# The second opinion. Larger and slower than the model most people dictate
-# with, which is the point: it is run once, offline, not while anyone waits.
-DEFAULT_MODEL = 'mlx-community/whisper-large-v3-mlx'
-# Used when the clip was already transcribed by DEFAULT_MODEL.
-FALLBACK_MODEL = 'mlx-community/whisper-large-v3-turbo'
-CONFIG = 'seed'
+# Second opinions, best first. The largest model is the most trustworthy one,
+# which is the point: it runs once, offline, not while anyone waits. Only
+# models already on disk are used — this tool never downloads anything. The
+# bundled Moonshine model is always there, and being a different architecture
+# its mistakes overlap less with Whisper's than another Whisper's would.
+PREFERENCE = (
+    'mlx-community/whisper-large-v3-mlx',
+    'moonshine/medium-streaming-en',
+    'mlx-community/whisper-large-v3-turbo',
+)
+# Cache namespace: decoded through the engine's own Transcriber, not one of
+# replay_bench's decoder configs.
+CONFIG = 'engine'
 
 
-def _second_model(stored_model: str, preferred: str) -> str:
-    return FALLBACK_MODEL if stored_model == preferred else preferred
+def second_model(stored_model: str, available: list[str]) -> str | None:
+    """The best available model that is not the one that wrote the clip."""
+    for model in available:
+        if model != stored_model:
+            return model
+    return None
+
+
+def _decode(clips: list[dict[str, Any]], model: str, cache: dict[str, Any]) -> None:
+    """Fill `cache` with `model`'s transcript of each clip. Resumable."""
+    import time
+
+    from transcriber import Transcriber
+
+    engine = Transcriber(model)
+    todo = [c for c in clips if f'{c["id"]}|{CONFIG}|{model}' not in cache]
+    for i, clip in enumerate(todo, 1):
+        audio = replay_bench.read_wav(clip['path'])
+        t0 = time.time()
+        text = engine.transcribe(audio)
+        cache[f'{clip["id"]}|{CONFIG}|{model}'] = {
+            'text': text, 'infer_s': round(time.time() - t0, 3),
+        }
+        if i % 5 == 0:
+            replay_bench._save_cache(cache)
+        print(f'\r    {i}/{len(todo)}', end='', flush=True)
+    if todo:
+        print()
+    replay_bench._save_cache(cache)
 
 
 def _snippets(stored: str, other: str, limit: int = 3) -> list[tuple[str, str]]:
@@ -65,7 +99,8 @@ def _snippets(stored: str, other: str, limit: int = 3) -> list[tuple[str, str]]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--model', default=DEFAULT_MODEL, help='the second-opinion model')
+    ap.add_argument('--model', default='',
+                    help='the second-opinion model (default: the best one already downloaded)')
     ap.add_argument('--sample', type=int, default=0,
                     help='a duration-stratified sample of N clips instead of all of them')
     ap.add_argument('--min-words', type=int, default=review_queue.MIN_WORDS)
@@ -75,11 +110,14 @@ def main() -> int:
     ap.add_argument('--dry-run', action='store_true', help='rank but do not write the queue')
     args = ap.parse_args()
 
-    for model in {args.model, FALLBACK_MODEL}:
-        info = model_catalog.get(model)
-        if info is None or info.backend != 'whisper-mlx':
-            print(f'{model!r} is not a Whisper model this tool can run.')
-            return 1
+    order = ([args.model] if args.model else []) + [m for m in PREFERENCE if m != args.model]
+    if args.model and model_catalog.get(args.model) is None:
+        print(f'{args.model!r} is not a model in the catalogue.')
+        return 1
+    available = [m for m in order if model_catalog.is_downloaded(m)]
+    if args.model and args.model not in available:
+        print(f'{args.model} is not downloaded. Get it from the Models page, then run this again.')
+        return 1
 
     store = get_store()
     corpus = replay_bench.load_corpus(min_words=args.min_words)
@@ -98,18 +136,25 @@ def main() -> int:
     cache = replay_bench._load_cache()
     by_model: dict[str, list[dict[str, Any]]] = {}
     for clip in corpus:
-        by_model.setdefault(_second_model(clip['model'], args.model), []).append(clip)
+        chosen = second_model(clip['model'], available)
+        if chosen is not None:
+            by_model.setdefault(chosen, []).append(clip)
+    if not by_model:
+        print('No second model is downloaded. Get one from the Models page.')
+        return 1
+    if PREFERENCE[0] not in available:
+        print(f'  ({PREFERENCE[0].split("/")[-1]} is not downloaded; it would give a '
+              'stronger second opinion.)')
     for model, clips in by_model.items():
-        if not model_catalog.is_downloaded(model):
-            print(f'{model} is not downloaded. Get it from the Models page, then run this again.')
-            return 1
         print(f'  second opinion from {model.split("/")[-1]} on {len(clips)} clips')
-        replay_bench.run_config(CONFIG, clips, model, cache)
+        _decode(clips, model, cache)
 
     pairs = []
     for clip in corpus:
-        model = _second_model(clip['model'], args.model)
-        hit = cache.get(f'{clip["id"]}|{CONFIG}|{model}')
+        chosen = second_model(clip['model'], available)
+        if chosen is None:
+            continue
+        hit = cache.get(f'{clip["id"]}|{CONFIG}|{chosen}')
         if not hit:
             continue
         # Both sides through the same clean-up, so a formatting or vocabulary
@@ -141,7 +186,7 @@ def main() -> int:
     if args.dry_run:
         print('\n  Dry run: no queue written.')
         return 0
-    path = review_queue.save(store, ranked, model=args.model)
+    path = review_queue.save(store, ranked, model=','.join(sorted(by_model)))
     print(f'\n  Queue written to {path}')
     print('  Open Say, switch on "To review", listen, and fix or confirm each one.')
     return 0

@@ -33,6 +33,19 @@ class RankTests(unittest.TestCase):
         self.assertEqual([e['rank'] for e in ranked], [1, 2])
         self.assertEqual(ranked[1]['differing_words'], 1)
 
+    def test_doubt_per_word_outranks_doubt_in_total(self):
+        """Ranking by the count alone sorted a real corpus by duration: two
+        models differ on small words everywhere, so the longest clip won."""
+        long_clip = ' '.join(f'word{i}' for i in range(100))
+        long_other = ' '.join(f'word{i}' if i >= 10 else f'other{i}' for i in range(100))
+        short_clip = ' '.join(f'term{i}' for i in range(10))
+        short_other = ' '.join(f'term{i}' if i >= 5 else f'miss{i}' for i in range(10))
+        ranked = review_queue.rank([
+            {'id': 1, 'stored': long_clip, 'other': long_other},    # 10 of 100
+            {'id': 2, 'stored': short_clip, 'other': short_other},  # 5 of 10
+        ])
+        self.assertEqual([e['id'] for e in ranked], [2, 1])
+
     def test_a_short_clip_is_not_worth_a_place(self):
         """One differing word of three is a 33% disagreement and tells nothing."""
         self.assertEqual(review_queue.rank([{'id': 1, 'stored': 'yes do that', 'other': 'yes do this'}]), [])
@@ -155,3 +168,21 @@ class ToolPureTests(unittest.TestCase):
     def test_health_report_on_an_empty_log_says_so(self):
         health = import_module('tools.health_report')
         self.assertIn('No dated lines', health.render(health.tally([])))
+
+
+class SecondModelTests(unittest.TestCase):
+    def test_the_best_available_model_that_did_not_write_the_clip(self):
+        mine = import_module('tools.disagreement_mine')
+        have = ['moonshine/medium-streaming-en', 'mlx-community/whisper-large-v3-turbo']
+        self.assertEqual(
+            mine.second_model('mlx-community/whisper-large-v3-turbo', have),
+            'moonshine/medium-streaming-en',
+        )
+        self.assertEqual(
+            mine.second_model('moonshine/medium-streaming-en', have),
+            'mlx-community/whisper-large-v3-turbo',
+        )
+
+    def test_a_clip_is_never_checked_against_the_model_that_wrote_it(self):
+        mine = import_module('tools.disagreement_mine')
+        self.assertIsNone(mine.second_model('m', ['m']))
