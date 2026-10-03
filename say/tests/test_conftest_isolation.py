@@ -79,3 +79,20 @@ def test_importing_a_tool_does_not_load_the_users_settings():
                      'tools.corpus_audit', 'tools.scorecard'):
             importlib.reload(importlib.import_module(name))
     applied.assert_not_called()
+
+
+def test_a_settings_reload_cannot_leak_into_the_next_test_part_one():
+    """Part one reloads settings, which points it back at the real file."""
+    import importlib
+
+    import settings
+
+    importlib.reload(settings)
+    assert settings.SETTINGS_FILE.startswith(os.path.expanduser('~/Library'))
+
+
+def test_a_settings_reload_cannot_leak_into_the_next_test_part_two(isolated_user_data):
+    """Part two runs next: the per-test fixture must have re-pointed it."""
+    import settings
+
+    assert settings.SETTINGS_FILE.startswith(isolated_user_data), settings.SETTINGS_FILE

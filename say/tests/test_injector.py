@@ -9,6 +9,15 @@ from text_inject_clipboard import InjectResult as ClipResult
 
 
 class InjectorTests(unittest.TestCase):
+    def setUp(self):
+        # These pin the routing, not the machine: with the developer's screen
+        # locked macOS turns secure input on, inject() refuses before routing,
+        # and three of them failed for that reason alone (2026-10-04). The
+        # secure-input path has its own tests below.
+        patcher = patch('injector.is_secure_input_enabled', return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_escapes_applescript_string_content(self):
         self.assertEqual(
             escape_applescript_text('say "hello" \\ now'),
