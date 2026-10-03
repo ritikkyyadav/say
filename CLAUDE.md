@@ -42,6 +42,7 @@ python say/tools/corrections_report.py --why     # explain an empty ledger
 python say/tools/readback_probe.py               # type a probe into the focused field: is a read-back miss timing, or an unreadable app?
 python say/tools/disagreement_mine.py --sample 40   # second-opinion decode -> the app's "To review" queue
 python say/tools/health_report.py --weeks 8      # engine warnings per week, from say.log
+python say/tools/scorecard.py                    # the six-category product score, from what Say actually did
 
 # ── Overlay (the dictation glyph) ──
 python say/tools/waveform_bench.py --stats               # per-band levels over the corpus
@@ -110,7 +111,7 @@ cd desktop && make dmg                           # → Say_0.1.0_aarch64.dmg (un
 |------|---------|-------------|
 | `app.py` | Both entry points. `SayApp` = menu-bar (rumps). `_run_server_only()` = the **shipped sidecar** mode: also builds the sleep/lock + device watchers **and the overlay** via `_setup_sidecar_ui()` and runs a Cocoa event loop (accessory policy, no Dock icon). The overlay is late-bound through `overlay_slot` because the hotkey is wired long before a run loop exists to hang a window off. | `SayApp(rumps.App)`, `main()`, `_run_server_only()`, `_setup_sidecar_ui()` |
 | `main.py` | Terminal/debug entry point (no menu bar). | `main()` |
-| `controller.py` | State machine coordinating record → **postprocess** → inject. Thread-safe via RLock. **Persists the transcript BEFORE injecting** and updates the row via `store.set_outcome()`, so a failed insert can never lose the user's words; failed text also goes to the clipboard. Best-effort `_save_recording()` runs either way. | `DictationController` — `.can_start_recording()` (the acceptance rule, shared with `start_recording()`), `DictationState(Enum)`, `DictationEvent(dataclass)` (+ `.progress`), `focus_policy(started_in, now_in) → 'inject' \| 'hold'` |
+| `controller.py` | State machine coordinating record → **postprocess** → inject. Thread-safe via RLock. **Persists the transcript BEFORE injecting** and updates the row via `store.set_outcome()`, so a failed insert can never lose the user's words; failed text also goes to the clipboard. Best-effort `_save_recording()` runs either way. **Every key press records exactly one outcome** (`record_press`, `_close_press`) in the metrics ledger — the denominator of the reliability score. `cancel_recording(reason='system')` for sleep/lock. | `DictationController` — `.can_start_recording()` (the acceptance rule, shared with `start_recording()`), `DictationState(Enum)`, `DictationEvent(dataclass)` (+ `.progress`), `focus_policy(started_in, now_in) → 'inject' \| 'hold'`, `PRESS_OUTCOMES`, `record_press(outcome, **fields)` |
 | `gestures.py` | **The seam between the hotkey listener and everything it drives** — one `GestureBridge` used by both entry points instead of five ad-hoc closures apiece. Key down asks `controller.can_start_recording()` *before* it shows the glyph or opens the mic; a refused `start_recording()` retracts the glyph, closes the mic and `force_idle()`s the listener; state events route to the overlay through the same object. `overlay_do()` swallows every overlay failure and warns once per action. Pure Python, no threads of its own, never raises into a hotkey thread. | `GestureBridge(controller, recorder, overlay=getter, listener=getter)` — `.on_arm()`, `.on_disarm()`, `.on_start()`, `.on_stop()`, `.on_cancel()`, `.on_status(event)`, `.overlay_do(action, *args)` |
 | `callback_pump.py` | **One ordered worker per hotkey listener.** A thread per callback let a quick release's `on_stop` overtake its own `on_start` and leave a recording nothing stopped; the pump runs callbacks in the order a human produced them, starts lazily, logs a raising callback and keeps going. | `CallbackPump(name)` — `.fire(cb)`, `.stop(timeout)`, `.running` |
 | `audio.py` | 16kHz mono mic stream. `arm()`/`disarm()` open the mic on hotkey-*down* so the pre-roll ring buffer is already filling before the tap/hold window resolves (without them pre-roll contributed 0 samples and the first word was lost). Otherwise **live only during a recording** (opens on `start()`, closes ~0.6s after `stop()` via debounced `_schedule_close` so the macOS mic indicator goes dark when idle). Back-to-back dictations reuse the open stream; reopen retries w/ backoff + PortAudio reset to dodge CoreAudio's -9986 race. **`start()` opens the device BEFORE marking the recording live** — the reopen can block seconds and anything captured in that window is lost. `live_seconds` reports callback-delivered audio only (excludes the pre-roll seed) so the controller can reject a clip the mic never contributed to. `set_monitor_callback()` is a live tap that fires **before** the not-capturing early return, so the overlay is already responding during the armed window. | `AudioRecorder` — `.start()`, `.stop() → np.ndarray`, `.cancel()`, `.shutdown()`, `.live_seconds`, `.set_amplitude_callback()`, `.set_event_callback()`, `.set_segment_callback()`, `.set_monitor_callback()`, `.pop_tail()`, `.arm()`, `.disarm()` |
@@ -151,7 +152,7 @@ cd desktop && make dmg                           # → Say_0.1.0_aarch64.dmg (un
 | `system_events.py` | Subscribes to screen-lock, sleep/wake NSNotifications. Cancels active recordings on lock/sleep. | `SystemEventWatcher(callback)` — `.start()`, `.stop()` |
 | `notifications.py` | macOS native notifications via osascript. Reads `config.SHOW_NOTIFICATIONS` **at call time**, so the Preferences toggle works without a restart. | `notify(title, text)`, `notify_transcription_complete(text)`, `notify_error(msg)` |
 | `logging_setup.py` | stderr + rotating file log (`~/Library/Logs/Say/say.log`, 10MB × 5). Crash handler for uncaught exceptions. | `configure_logging(level)`, `get_logger(name)`, `install_crash_handler()` |
-| `metrics.py` | JSONL ledger at `~/Library/Logs/Say/metrics.jsonl`. Records transcription timing, errors and `held` transcripts. Path resolved at construction (not a default argument), so tests can redirect it. | `get_ledger() → MetricsLedger`, `.record(**fields)` |
+| `metrics.py` | JSONL ledger at `~/Library/Logs/Say/metrics.jsonl`. Records transcription timing, errors and `held` transcripts. Path resolved at construction (not a default argument), so tests can redirect it. Also `{"event": "press", "outcome": …}`, one per key press, never text (see `controller.PRESS_OUTCOMES`). | `get_ledger() → MetricsLedger`, `.record(**fields)` |
 | `single_instance.py` | fcntl-based lock at `~/Library/Application Support/Say/say.lock`. Fail-open: if lock can't be created, runs anyway. | `acquire() → bool`, `release()` |
 
 ## File Map — Server Layer (`say/server/`)
@@ -421,46 +422,6 @@ type RecordingsConfigPatch = Partial<Pick<RecordingsConfig, 'save_recordings' | 
   is the correct history: unmeasured. `test_insertions_we_never_read_back_are_not_counted_as_clean`
   pins the 109-row case. **Any future quality tier inherits this rule** — a metric that flatters an
   unmeasured pipeline is worse than no metric, because it ends arguments that should still be open.
-- **The read-back may only ever see text Say itself produced.** Reading the focused field means
-  touching a document the user did not hand us, so the contract is structural, not a promise: only the
-  element Say just injected into, only inside a window it opened itself (no polling, no scanning),
-  document context held **in memory** purely to relocate our span and dropped the moment the timer
-  fires, and only our span + what it became persisted. `_relocate()` returns None rather than guess —
-  a wrong region fabricates a correction, which is worse than no data because everything downstream
-  then learns from it. It requests **no new permission**, riding the Accessibility grant injection
-  already needs, and fails closed and silent without it (`AXIsProcessTrusted()` false → `-25204`).
-  `test_document_context_is_dropped_once_it_has_been_used` pins the persistence half.
-- **Measure before tuning the maturity layer — this repo has never done it any other way.** The style
-  seed, `TILT_DB_PER_BAND`, `NOISE_RISE_DB_PER_S` and the repetition thresholds were all set by
-  replaying the stored corpus (`replay_bench.py`, `waveform_bench.py`), never by guessing. A semantic
-  tier is far easier to fool yourself about than a DSP constant, so it gets the same discipline: the
-  correction ledger exists first, and any refiner is scored against it on real stored dictations
-  before it is allowed near the injection path.
-- **A strong text prompt with almost no audio makes the decoder loop.** The single worst failure this
-  engine has shipped: a 0.63 s clip returned 222 words of "available available available…", which were
-  typed straight into the user's document. Whisper's own guards (`compression_ratio_threshold`, the
-  temperature ladder) only *re-roll* the window — when every temperature degenerates the last attempt is
-  returned anyway, so the loop reaches the app. Three independent defences, all required: (1) never decode
-  a clip the mic did not contribute to (`recorder.live_seconds` < `controller._MIN_LIVE_SECONDS` → error,
-  not silence); (2) drop `STYLE_SEED` from the prompt below `transcriber._STYLE_SEED_MIN_SECONDS` (2 s) —
-  vocabulary terms still go through, they are a short comma list, not two sentences of prose; (3)
-  `postprocess.collapse_repetitions()` as the last line of defence, including intra-token loops
-  ("addholdholdhold…"). Thresholds (4 identical words/phrases in a row) were tuned against all 108 real
-  stored dictations: at 4 only genuine loops collapse, at 3 natural emphasis ("and again, and again") was
-  being flattened. **Validate any threshold change the same way — replay the store, don't guess.**
-- **Our own injected keystrokes come back through our own CGEventTap.** `text_inject_cgevent` stamps
-  `INJECTED_EVENT_MARKER` into `kCGEventSourceUserData` and `hotkey_fn._event_callback` returns those
-  events untouched. Without it each injected chunk reads as the user typing, and a keystroke arriving while
-  the trigger key is held abandons the gesture — so starting a dictation while the previous one is still
-  being typed out would silently cancel it.
-- **A key press the engine refuses must not look like a recording — this is what "the overlay disappears" was.**
-  Both entry points used to show the glyph and open the microphone on key-*down*, unconditionally,
-  and only then ask the controller for a recording. With a Whisper model active a long dictation can
-  spend a minute in PROCESSING (streaming segments still decoding at 35–44 s each on a loaded
-  machine, then injection), and someone who keeps dictating presses Fn inside that window. The
-  controller refuses — the shipped engine's own log holds **58 refusals, every one during
-  PROCESSING**, 56 of them directly after an `Fn down` — but nothing told the glyph or the mic:
-  the mark switched from the processing sweep to live spectrum and followed the voice, the old
 - **Read-back coverage fails by length and by app, so waiting will not raise it.** Measured over
   484 insertions on 2026-10-01: 9 were ever compared — **7 of 93 under five words, 0 of 307 at twenty
   or more**, 0 of 60 in Claude Desktop, 0 of 14 in Codex. `_observe()` snapshots the field the instant
@@ -532,6 +493,18 @@ type RecordingsConfigPatch = Partial<Pick<RecordingsConfig, 'save_recordings' | 
   (`CGEventSourceFlagsState` — the hardware, not our cache) after each re-enable and runs the normal
   release path when Fn is no longer held, so a push-to-talk clip is *transcribed* rather than discarded.
   An unreadable flag state is deliberately left alone: guessing there would cancel live recordings on a
+- **`ps` RSS does not see the model. Measure memory with `footprint <pid>`.** On 2026-10-03 the
+  running engine read **50 MB** in `ps -o rss` and **3,781 MB** in `footprint` — 3.5 GB of it
+  `IOAccelerator (graphics)`, the Metal buffers MLX loads Whisper into. The first version of
+  `tools/scorecard.py` scored footprint 10/10 off the RSS number. Any memory claim about this
+  engine — a budget, an idle-unload saving, a comparison with another app — has to come from
+  `phys_footprint`, and the pid read from `runtime.json` has to be checked against `ps -o command=`
+  first.
+- **The score is only as honest as its denominator.** `controller.record_press` writes one outcome
+  per key press; `tools/scorecard.py` turns them into the reliability score and refuses to credit a
+  category without enough evidence (30 presses, 10 long clips, 40 reviewed clips). Add an exit path
+  to the controller and it needs a `_close_press` call and a `PressOutcomeTests` case, or the score
+  silently improves.
   spurious read. `MAX_RECORDING_SECONDS` stays the backstop for an outage so total that even the disable
   notification never arrives.
 - **The overlay's "instant" is bought at arm, not at record.** The glyph goes up on
@@ -541,6 +514,46 @@ type RecordingsConfigPatch = Partial<Pick<RecordingsConfig, 'save_recordings' | 
   **before** `recorder.arm()` for the same reason. `arm()` and `listen()` render identically on
   purpose: there is deliberately no visual event at the moment a gesture becomes a recording,
   because that is a transition the user did not ask for and would only read as a glitch.
+- **The read-back may only ever see text Say itself produced.** Reading the focused field means
+  touching a document the user did not hand us, so the contract is structural, not a promise: only the
+  element Say just injected into, only inside a window it opened itself (no polling, no scanning),
+  document context held **in memory** purely to relocate our span and dropped the moment the timer
+  fires, and only our span + what it became persisted. `_relocate()` returns None rather than guess —
+  a wrong region fabricates a correction, which is worse than no data because everything downstream
+  then learns from it. It requests **no new permission**, riding the Accessibility grant injection
+  already needs, and fails closed and silent without it (`AXIsProcessTrusted()` false → `-25204`).
+  `test_document_context_is_dropped_once_it_has_been_used` pins the persistence half.
+- **Measure before tuning the maturity layer — this repo has never done it any other way.** The style
+  seed, `TILT_DB_PER_BAND`, `NOISE_RISE_DB_PER_S` and the repetition thresholds were all set by
+  replaying the stored corpus (`replay_bench.py`, `waveform_bench.py`), never by guessing. A semantic
+  tier is far easier to fool yourself about than a DSP constant, so it gets the same discipline: the
+  correction ledger exists first, and any refiner is scored against it on real stored dictations
+  before it is allowed near the injection path.
+- **A strong text prompt with almost no audio makes the decoder loop.** The single worst failure this
+  engine has shipped: a 0.63 s clip returned 222 words of "available available available…", which were
+  typed straight into the user's document. Whisper's own guards (`compression_ratio_threshold`, the
+  temperature ladder) only *re-roll* the window — when every temperature degenerates the last attempt is
+  returned anyway, so the loop reaches the app. Three independent defences, all required: (1) never decode
+  a clip the mic did not contribute to (`recorder.live_seconds` < `controller._MIN_LIVE_SECONDS` → error,
+  not silence); (2) drop `STYLE_SEED` from the prompt below `transcriber._STYLE_SEED_MIN_SECONDS` (2 s) —
+  vocabulary terms still go through, they are a short comma list, not two sentences of prose; (3)
+  `postprocess.collapse_repetitions()` as the last line of defence, including intra-token loops
+  ("addholdholdhold…"). Thresholds (4 identical words/phrases in a row) were tuned against all 108 real
+  stored dictations: at 4 only genuine loops collapse, at 3 natural emphasis ("and again, and again") was
+  being flattened. **Validate any threshold change the same way — replay the store, don't guess.**
+- **Our own injected keystrokes come back through our own CGEventTap.** `text_inject_cgevent` stamps
+  `INJECTED_EVENT_MARKER` into `kCGEventSourceUserData` and `hotkey_fn._event_callback` returns those
+  events untouched. Without it each injected chunk reads as the user typing, and a keystroke arriving while
+  the trigger key is held abandons the gesture — so starting a dictation while the previous one is still
+  being typed out would silently cancel it.
+- **A key press the engine refuses must not look like a recording — this is what "the overlay disappears" was.**
+  Both entry points used to show the glyph and open the microphone on key-*down*, unconditionally,
+  and only then ask the controller for a recording. With a Whisper model active a long dictation can
+  spend a minute in PROCESSING (streaming segments still decoding at 35–44 s each on a loaded
+  machine, then injection), and someone who keeps dictating presses Fn inside that window. The
+  controller refuses — the shipped engine's own log holds **58 refusals, every one during
+  PROCESSING**, 56 of them directly after an `Fn down` — but nothing told the glyph or the mic:
+  the mark switched from the processing sweep to live spectrum and followed the voice, the old
 - **The glyph is one path, not twelve layers.** `waveform.silhouette()` returns a single closed
   polygon for the whole mark. Twelve `CALayer`s would disagree about sub-pixel column boundaries
   (visible seams) and would read as a row of separate meters; the reference mark is one stepped
@@ -893,6 +906,12 @@ Security model: loopback-only API (127.0.0.1), per-launch random Bearer token (`
   `SIGN_ID := $(if $(SAY_SIGN_ID),$(SAY_SIGN_ID),Say Local Signing)` and then did a bare
   `export SAY_SIGN_ID` — exporting the *input* variable, empty, not the resolved one. `Say.spec` read it
   with `os.environ.get('SAY_SIGN_ID', 'Say Local Signing')`, whose default only applies when the key is
+- **A build must never read `runtime.json`.** `vite.config.ts` used to run its `define` block for
+  `vite build` as well as the dev server, so every build made while an engine was running baked that
+  engine's bearer token into the shipped JavaScript (`desktop/dist` from the Oct 1 build carried one).
+  Runtime values are read only when `command === 'serve'`; the packaged app gets its endpoint from the
+  Tauri `get_engine_endpoint` command. `make check-bundle` (run after `ui-build` and after `app`)
+  fails the build if `dist/` contains the running engine's token.
   **absent**; a present-but-empty value sailed through, `security find-certificate -c ''` failed, and the
   spec fell back to `-`. Net effect: **every build by anyone who had not manually exported `SAY_SIGN_ID`
   ad-hoc signed the engine**, certificate installed or not — producing `designated => cdhash H"…"` and
@@ -901,12 +920,6 @@ Security model: loopback-only API (127.0.0.1), per-launch random Bearer token (`
   `os.environ.get('SAY_SIGN_ID') or 'Say Local Signing'`. `make build` also prints the resulting
   designated requirement and warns on a bare cdhash, so it can never fail silently again.
   `test_build_signing.py` pins all three.
-- **A build must never read `runtime.json`.** `vite.config.ts` used to run its `define` block for
-  `vite build` as well as the dev server, so every build made while an engine was running baked that
-  engine's bearer token into the shipped JavaScript (`desktop/dist` from the Oct 1 build carried one).
-  Runtime values are read only when `command === 'serve'`; the packaged app gets its endpoint from the
-  Tauri `get_engine_endpoint` command. `make check-bundle` (run after `ui-build` and after `app`)
-  fails the build if `dist/` contains the running engine's token.
 - **Stale LaunchServices registrations put duplicate "Say" rows in the Privacy panes.** Old DMG mounts, `Say.app.old`, and build outputs under other checkouts all stay registered forever, each able to show its own row — so the switch you flip may not be the record `tccd` evaluates (the tell: `tccutil reset <service> <id>` prints "Successfully reset" more than once). Purge with `lsregister -u <path>` for paths that no longer exist before debugging a grant.
 - **Two different bundles are called `Say.app`, and installing the wrong one looks like "the app is
   broken".** The desktop shell (`com.ritikyadav.say.desktop`) owns the window; the engine
@@ -1009,13 +1022,13 @@ permission story.
 | `test_streaming.py` | 33 | Silence splitting (lossless, pause/min/max rules), carry-over prompt, incremental segmenter, session join + failure isolation, **decode attempts counted (silence vs failure)**, **a short tail gets the terms-only prompt with no carry-over**, progress reported per decode and a raising progress callback never breaks the session |
 | `test_postprocess.py` | 71 | Soundex, fuzzy vocabulary repair (incl. split/joined words + over-match guards), formatting rules, switches, `asr_prompt()`, **repetition-loop collapse (word/phrase/intra-token, natural-repetition guards) + style-seed scaling** |
 | `test_postprocess.py` (see above) / `test_injector.py` | +4 | Secure-input detection: probe never raises, injection refused, neither backend called |
+| `~/Library/Application Support/Say/review_queue.json` | `{ version, model, entries: [{ id, rank, differing_words, words, share }] }` — a cache written by `tools/disagreement_mine.py`; ids and counts only | 0600 |
 | `test_corrections.py` | 39 | Correction capture: **continuation is not correction** (both the pure-trailing case and the one fused into the boundary block), **a rewrite is not correction**, leading expansion is not mangled by the trailing-only split, case/punctuation alone is the formatter's business, term-pair extraction + size guards, store roundtrip + rate denominators, `_relocate` gives up rather than guessing, watcher records/ignores/fails-closed, **document context never reaches the database**, **unmeasured insertions are never scored as clean** (the 109-row regression), a clean read-back still counts as measured, a vanished field does not, timers bounded and cancellable |
 | `test_owner_watch.py` | 21 | **The engine must not outlive the app.** A real child process is spawned and killed: the watchdog fires on a clean exit *and* on SIGKILL (Force Quit, which the shell cannot catch), the poll backstop still fires with kqueue disabled, an owner already gone at startup fires inline (so a quit during model load can't finish arming the engine), pid 0/1 is never watched (launchd never exits — watching it is watching nothing), `stop()` ends the watch without shutting down, the shutdown runs exactly once, a failing callback can't escape, **an unreadable process state counts as alive**, `runtime.json` records an owner for a sidecar but none for a hand-started engine, and the **exit backstop** fires when the clean shutdown stalls, runs its cleanup first, survives a failing cleanup and is cancellable. All seven mutations of the fix were verified to break these |
 | `test_recordings.py` | 12 | WAV save+link, list/totals, read bytes, delete one/all, retention (days/size), ZIP export, config apply, **the shipped default is a 2 GiB size cap** |
 | `test_audio.py` | 21 | AudioRecorder pre-roll, event dispatch, **`live_seconds` accounting + open-before-capture ordering**, and `DeviceSerialisationTests`: **arm() and start() never open the device concurrently**, **the PortAudio reset cannot run while another thread is in `Pa_OpenStream`**, a close cannot race an open, a wedged device is bounded rather than infinite and parks **one** thread not one per press, arm() never raises into the hotkey thread while start() still reports a dead mic (6 of the 7 verified to fail against the pre-fix module) |
 | `test_model_catalog.py` | 10 | Catalog data, cache state (HF + Moonshine), disk usage, config sync, backend field |
 | `test_model_manager.py` | 13 | Model swap, download progress/cancel, disk pre-check, delete guards (whisper + moonshine) |
-| `~/Library/Application Support/Say/review_queue.json` | `{ version, model, entries: [{ id, rank, differing_words, words, share }] }` — a cache written by `tools/disagreement_mine.py`; ids and counts only | 0600 |
 | `test_controller.py` | 32 | DictationController state transitions, transcript durability (persist-before-inject), streaming session wiring (both prompts reach the session), **live-audio guard**, `can_start_recording()` agreeing with `start_recording()` in every state, **a silent complete session is not decoded twice** while an incomplete one is, **the focus guard** (unchanged focus types, moved focus holds to clipboard + `held` row + notification, unknown focus types, the policy table), and PROCESSING events carrying `progress` only while the user waits |
 | `test_gestures.py` | 17 | **The hotkey → engine → glyph wiring.** Key down while READY shows the glyph *before* opening the mic; while LOADING/RECORDING/PROCESSING it touches neither; after ERROR it still arms; **a refused start retracts the glyph, closes the mic and resets the listener** (the 58-refusal regression); an accepted start leaves the armed glyph up; a start that raises is treated as refused and never escapes; state events route to listen/process/dismiss; no overlay is fine; a broken overlay warns once and never blocks the mic; plus two end-to-end runs against the real `DictationController` |
 | `test_hotkey.py` | 4 | HotkeyListener tap-to-toggle, hotkey parsing |
