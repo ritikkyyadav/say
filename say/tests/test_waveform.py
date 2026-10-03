@@ -510,7 +510,7 @@ class ShakeTests(unittest.TestCase):
 
         samples = [shake_offset(SHAKE_S * k / 240) for k in range(241)]
         self.assertLessEqual(max(abs(v) for v in samples), SHAKE_PT)
-        crossings = sum(1 for a, b in zip(samples, samples[1:]) if a * b < 0)
+        crossings = sum(1 for a, b in zip(samples, samples[1:], strict=False) if a * b < 0)
         self.assertGreaterEqual(crossings, int(2 * SHAKE_CYCLES) - 1)
 
     def test_it_settles(self):
