@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Any
 
 import config
+import recall
 from injector import InjectionResult, inject
 from logging_setup import get_logger
 from metrics import get_ledger
@@ -109,9 +110,13 @@ class DictationController:
         injector: Injector = inject,
         status_callback: StatusCallback | None = None,
         logger: Logger | None = print,
+        backspacer: Callable[[int], Any] | None = None,
     ):
         self.recorder = recorder
         self.transcriber = transcriber
+        # Presses Backspace n times, for undo. Injectable so tests never post
+        # real key events.
+        self._backspacer = backspacer
         self.injector = injector
         self.status_callback = status_callback
         self.logger = logger
@@ -130,6 +135,10 @@ class DictationController:
         # matter how many exit paths it brushes past (see `_close_press`).
         self._press_open = False
         self._press_mode: str | None = None
+        # What Say last typed, for undo (recall.py). Memory only, never stored.
+        self._last_delivery: recall.Delivery | None = None
+        # Key presses + clicks seen by the Fn tap; None when no tap can see them.
+        self._input_source: Callable[[], int | None] = lambda: None
 
         set_event = getattr(recorder, 'set_event_callback', None)
         if callable(set_event):
@@ -201,6 +210,23 @@ class DictationController:
             self.recorder.stop()
         except Exception:
             pass
+
+    def set_input_source(self, source: Callable[[], int | None]) -> None:
+        """Where to read the user's key-press/click count from (the Fn tap)."""
+        self._input_source = source
+
+    def _inputs(self) -> int | None:
+        try:
+            value = self._input_source()
+        except Exception:
+            return None
+        return value if isinstance(value, int) else None
+
+    def _remember_delivery(self, transcript_id: int | None, text: str, app: str | None) -> None:
+        self._last_delivery = recall.Delivery(
+            transcript_id=transcript_id, text=text, target_app=app,
+            at=time.monotonic(), keystrokes=self._inputs(),
+        )
 
     def _close_press(self, outcome: str, **fields: Any) -> None:
         """Record how the press in flight ended — once, whichever path gets here first."""
@@ -515,6 +541,7 @@ class DictationController:
                 _log.exception('Failed to record injection outcome')
 
         if result.success:
+            self._remember_delivery(transcript_id, text, target_app)
             self._close_press(
                 'delivered', audio_seconds=round(duration, 3),
                 wait_seconds=round(inference_seconds, 3), words=len(text.split()),
@@ -619,6 +646,94 @@ class DictationController:
         except Exception:
             _log.exception('Could not copy the failed transcript to the clipboard')
             return False
+
+    # ── getting the last dictation back (recall.py) ──────────────
+
+    def _busy(self) -> str | None:
+        with self._lock:
+            if self._recording or self.state in (
+                DictationState.LOADING, DictationState.RECORDING, DictationState.PROCESSING,
+            ):
+                return self.state.value
+        return None
+
+    def _latest_transcript(self) -> tuple[int | None, str]:
+        """The newest dictation, delivered or not, in the user's version if they fixed it."""
+        try:
+            store = get_store()
+            rows = store.list(limit=1)
+            if rows:
+                row = rows[0]
+                fixed = store.manual_corrections().get(row.id)
+                return row.id, fixed or row.text
+        except Exception:
+            _log.debug('Could not read the latest transcript', exc_info=True)
+        last = self._last_delivery
+        return (last.transcript_id, last.text) if last else (None, '')
+
+    def reinsert_last(self) -> bool:
+        """Type the most recent dictation again, into whatever has focus now.
+
+        The recovery for every way a dictation can go missing after Say has
+        it: held because focus moved, failed to inject, cleared by mistake.
+        """
+        busy = self._busy()
+        if busy is not None:
+            get_ledger().record(event='recall', action='reinsert', outcome='refused_busy', state=busy)
+            return False
+        transcript_id, text = self._latest_transcript()
+        if not text:
+            notify_error('Nothing to re-insert yet.')
+            get_ledger().record(event='recall', action='reinsert', outcome='nothing')
+            return False
+        app = get_frontmost_app()
+        result = self.injector(text)
+        if result.success:
+            self._remember_delivery(transcript_id, text, app)
+            get_ledger().record(event='recall', action='reinsert', outcome='delivered',
+                                words=len(text.split()), method=result.method)
+            return True
+        recovered = self._copy_to_clipboard(text)
+        notify_error(
+            f'Re-insert failed ({result.error or "unknown error"})'
+            + (' — copied to the clipboard' if recovered else '')
+        )
+        get_ledger().record(event='recall', action='reinsert', outcome='error:injection',
+                            recovered_to_clipboard=recovered)
+        return False
+
+    def undo_last(self) -> bool:
+        """Delete what Say just typed — only when that is provably safe.
+
+        See recall.undo_refusal for the rule. Any doubt refuses and says why:
+        Backspaces sent to the wrong place delete the user's own text.
+        """
+        busy = self._busy()
+        if busy is not None:
+            get_ledger().record(event='recall', action='undo', outcome='refused_busy', state=busy)
+            return False
+        last = self._last_delivery
+        reason = recall.undo_refusal(
+            last, now=time.monotonic(), frontmost=get_frontmost_app(), keystrokes=self._inputs(),
+        )
+        if reason is not None or last is None:
+            notify_error(reason or 'Nothing to undo.')
+            get_ledger().record(event='recall', action='undo', outcome='refused', reason=reason)
+            return False
+        count = recall.backspaces_for(last.text) or 0
+        backspacer = self._backspacer
+        if backspacer is None:
+            from text_inject_cgevent import delete_backward
+
+            backspacer = delete_backward
+        result = backspacer(count)
+        if getattr(result, 'success', False):
+            self._last_delivery = None
+            get_ledger().record(event='recall', action='undo', outcome='done', chars=count)
+            return True
+        notify_error(f'Undo failed ({getattr(result, "error", None) or "unknown error"}).')
+        get_ledger().record(event='recall', action='undo', outcome='error')
+        return False
 
     def cancel_recording(self, reason: str = 'user') -> bool:
         """Cancel the current recording without transcribing.

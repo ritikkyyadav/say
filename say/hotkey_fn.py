@@ -37,6 +37,8 @@ class _Mode(Enum):
 
 # Timing constants
 _PENDING_TIMEOUT = 0.25   # Max seconds to wait for Space after Fn press
+_KEY_V = 9                # kVK_ANSI_V: Fn+V re-inserts the last dictation
+_KEY_Z = 6                # kVK_ANSI_Z: Fn+Z undoes it (see recall.py)
 _PTT_START_DELAY = 0.08   # Small debounce before starting PTT recording
 
 # kCGEventFlagMaskSecondaryFn — the Fn/globe modifier bit. Module-level because
@@ -76,6 +78,8 @@ class FnHotkeyListener:
         on_cancel_cb: Callable[[], object] | None = None,
         on_arm_cb: Callable[[], object] | None = None,
         on_disarm_cb: Callable[[], object] | None = None,
+        on_reinsert_cb: Callable[[], object] | None = None,
+        on_undo_cb: Callable[[], object] | None = None,
     ):
         self._on_start = on_start_cb
         self._on_stop = on_stop_cb
@@ -85,6 +89,15 @@ class FnHotkeyListener:
         # tap-vs-hold window instead of losing that audio.
         self._on_arm = on_arm_cb
         self._on_disarm = on_disarm_cb
+        # Fn+V / Fn+Z (see recall.py). Fired when Fn is *released*, never
+        # while it is held: an event posted with Fn down inherits it, and
+        # Fn + Delete is forward delete.
+        self._chords = {_KEY_V: on_reinsert_cb, _KEY_Z: on_undo_cb}
+        self._chord_action: Callable[[], object] | None = None
+        # Key presses that reached an app and mouse clicks, counted (never
+        # recorded) so undo can tell whether the user touched anything since
+        # Say typed. Say's own injected events are excluded before counting.
+        self._user_inputs = 0
 
         self._mode = _Mode.IDLE
         self._fn_down = False
@@ -111,6 +124,16 @@ class FnHotkeyListener:
     @property
     def hotkey_label(self) -> str:
         return 'Fn (hold) / Fn+Space (toggle)'
+
+    @property
+    def user_inputs(self) -> int:
+        """Key presses and clicks seen since the listener started. Count only."""
+        with self._lock:
+            return self._user_inputs
+
+    def _note_user_input(self) -> None:
+        with self._lock:
+            self._user_inputs += 1
 
     def _fire(self, callback: Callable[[], object]) -> None:
         """Run a callback off the tap thread, after every callback fired before it."""
@@ -184,6 +207,11 @@ class FnHotkeyListener:
         """Fn key released."""
         with self._lock:
             self._fn_down = False
+            chord, self._chord_action = self._chord_action, None
+            if chord is not None:
+                # The chord already abandoned the gesture; now that no modifier
+                # is held, run what it asked for.
+                self._fire(chord)
 
             if self._mode == _Mode.PENDING:
                 # Fn released quickly without Space → a short tap, not a
@@ -252,6 +280,25 @@ class FnHotkeyListener:
                 self._mode = _Mode.IDLE
                 self._cancel_pending_timer()
                 self._cancel_recording()
+
+    def _handle_chord(self, keycode: int) -> bool:
+        """Fn+V or Fn+Z while Fn is held. True when the key was taken as a chord.
+
+        Taken only in the windows where any other key would abandon the
+        gesture anyway (PENDING, push-to-talk): the gesture is abandoned the
+        same way, and the action waits for Fn to come up. Hands-free is left
+        alone — someone typing V during a latched dictation is typing.
+        """
+        action = self._chords.get(keycode)
+        if action is None:
+            return False
+        with self._lock:
+            if not (self._fn_down and self._mode in (_Mode.PENDING, _Mode.PUSH_TO_TALK)):
+                return False
+        self._handle_other_key()
+        with self._lock:
+            self._chord_action = action
+        return True
 
     def _fn_physically_down(self) -> bool | None:
         """Is the Fn/globe key held right now, according to the hardware?
@@ -390,6 +437,7 @@ class FnHotkeyListener:
                 if swallow:
                     self._handle_space_down()
                     return None
+                self._note_user_input()
                 return event
             if keycode == 53:  # Escape
                 with self._lock:
@@ -397,7 +445,11 @@ class FnHotkeyListener:
                 if swallow:
                     self._handle_escape()
                     return None
+                self._note_user_input()
                 return event
+            if self._handle_chord(keycode):
+                return None  # neither typed into the app nor counted as typing
+            self._note_user_input()
 
             # Any other key while Fn is held means the user is doing an
             # ordinary Fn shortcut (Fn+arrows, Fn+Delete, Fn+F-keys), not
@@ -411,6 +463,12 @@ class FnHotkeyListener:
                 self._handle_other_key()
             return event
 
+        elif event_type in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventRightMouseDown):
+            # A click can move the cursor without a keystroke. Counted so undo
+            # never deletes from a spot the user clicked to.
+            self._note_user_input()
+            return event
+
         return event
 
     def _run_tap(self) -> None:
@@ -421,6 +479,8 @@ class FnHotkeyListener:
         event_mask = (
             (1 << Quartz.kCGEventFlagsChanged)
             | (1 << Quartz.kCGEventKeyDown)
+            | (1 << Quartz.kCGEventLeftMouseDown)
+            | (1 << Quartz.kCGEventRightMouseDown)
         )
 
         # Active session-level tap. The system globe-key action

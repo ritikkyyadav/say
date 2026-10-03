@@ -221,11 +221,7 @@ class SayApp(rumps.App):
 
         try:
             info = make_listener(
-                on_start=self._bridge.on_start,
-                on_stop=self._bridge.on_stop,
-                on_cancel=self._bridge.on_cancel,
-                on_arm=self._bridge.on_arm,
-                on_disarm=self._bridge.on_disarm,
+                **self._bridge.listener_callbacks(),
                 prefer_legacy=prefer_legacy,
             )
         except RuntimeError as exc:
@@ -287,13 +283,7 @@ class SayApp(rumps.App):
             return
 
         def build():
-            return try_start_fn_listener(
-                on_start=self._bridge.on_start,
-                on_stop=self._bridge.on_stop,
-                on_cancel=self._bridge.on_cancel,
-                on_arm=self._bridge.on_arm,
-                on_disarm=self._bridge.on_disarm,
-            )
+            return try_start_fn_listener(**self._bridge.listener_callbacks())
 
         self._upgrader = ListenerUpgrader(
             build,
@@ -717,11 +707,7 @@ def _run_server_only(owner_pid: int | None = None) -> None:
     try:
         _log.info('Starting hotkey listener (sidecar mode)…')
         listener_info = make_listener(
-            on_start=bridge.on_start,
-            on_stop=bridge.on_stop,
-            on_cancel=bridge.on_cancel,
-            on_arm=bridge.on_arm,
-            on_disarm=bridge.on_disarm,
+            **bridge.listener_callbacks(),
             prefer_legacy=bool(getattr(config, 'PREFER_LEGACY_HOTKEY', False)),
         )
         if listener_info is not None:
@@ -783,13 +769,7 @@ def _run_server_only(owner_pid: int | None = None) -> None:
         and not bool(getattr(config, 'PREFER_LEGACY_HOTKEY', False))
     ):
         def _build_fn_listener():
-            return try_start_fn_listener(
-                on_start=bridge.on_start,
-                on_stop=bridge.on_stop,
-                on_cancel=bridge.on_cancel,
-                on_arm=bridge.on_arm,
-                on_disarm=bridge.on_disarm,
-            )
+            return try_start_fn_listener(**bridge.listener_callbacks())
 
         def _adopt_fn_listener(info) -> None:
             nonlocal listener_info, fn_override_acquired

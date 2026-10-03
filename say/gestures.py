@@ -31,12 +31,25 @@ to catch it.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypedDict
 
 from controller import DictationEvent, DictationState
 from logging_setup import get_logger
 
 _log = get_logger('gestures')
+
+
+class ListenerCallbacks(TypedDict):
+    """The full set a hotkey listener is built with. Typed so a call site
+    unpacking it is checked against the listener's own parameter names."""
+
+    on_start: Callable[[], None]
+    on_stop: Callable[[], None]
+    on_cancel: Callable[[], None]
+    on_arm: Callable[[], None]
+    on_disarm: Callable[[], None]
+    on_reinsert: Callable[[], None]
+    on_undo: Callable[[], None]
 
 OverlayGetter = Callable[[], Any]
 ListenerGetter = Callable[[], Any]
@@ -64,6 +77,28 @@ class GestureBridge:
         self._overlay = overlay or (lambda: None)
         self._listener = listener or (lambda: None)
         self._warned: set[str] = set()
+        # Undo needs to know whether the user has touched anything since Say
+        # typed. Only the Fn listener can see that; the getter follows the
+        # listener across a fallback-to-Fn upgrade.
+        set_source = getattr(controller, 'set_input_source', None)
+        if callable(set_source):
+            set_source(self._user_inputs)
+
+    def listener_callbacks(self) -> ListenerCallbacks:
+        """Every hotkey callback, for `make_listener(**bridge.listener_callbacks())`.
+
+        One place for the whole set, so the two entry points and their
+        upgrade paths cannot wire a different subset of gestures.
+        """
+        return {
+            'on_start': self.on_start,
+            'on_stop': self.on_stop,
+            'on_cancel': self.on_cancel,
+            'on_arm': self.on_arm,
+            'on_disarm': self.on_disarm,
+            'on_reinsert': self.on_reinsert,
+            'on_undo': self.on_undo,
+        }
 
     # ── the glyph ────────────────────────────────────────────────
 
@@ -137,6 +172,14 @@ class GestureBridge:
     def on_stop(self) -> None:
         self._safe(self._controller.stop_recording, 'stop')
 
+    def on_reinsert(self) -> None:
+        """Fn+V, on Fn release: type the last dictation again."""
+        self._safe(self._controller.reinsert_last, 'reinsert')
+
+    def on_undo(self) -> None:
+        """Fn+Z, on Fn release: take back what Say just typed, if that is safe."""
+        self._safe(self._controller.undo_last, 'undo')
+
     def on_cancel(self) -> None:
         self._safe(self._controller.cancel_recording, 'cancel')
 
@@ -171,6 +214,11 @@ class GestureBridge:
         listener = self._listener()
         mode = getattr(listener, 'mode', None) if listener is not None else None
         return str(mode) if mode else 'ptt'
+
+    def _user_inputs(self) -> int | None:
+        listener = self._listener()
+        count = getattr(listener, 'user_inputs', None)
+        return count if isinstance(count, int) else None
 
     @staticmethod
     def _safe(fn: Callable[[], Any], what: str) -> Any:

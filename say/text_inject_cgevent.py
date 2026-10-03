@@ -132,3 +132,34 @@ def inject_text_cgevent(text: str) -> InjectResult:
         return InjectResult(False, f'cgevent post failed: {exc}')
 
     return InjectResult(True, None)
+
+
+_KEYCODE_DELETE = 51  # kVK_Delete, the Backspace key
+
+
+def delete_backward(count: int) -> InjectResult:
+    """Press Backspace `count` times. Used only by undo (see recall.py).
+
+    The modifier flags are cleared on every event: an event created with no
+    source inherits whatever is held, and Fn + Delete is *forward* delete,
+    which would eat the text after the cursor instead of Say's.
+    """
+    if count <= 0:
+        return InjectResult(False, 'nothing to delete')
+    try:
+        import Quartz
+    except Exception as exc:
+        return InjectResult(False, f'Quartz unavailable: {exc}')
+    try:
+        for _ in range(count):
+            for down in (True, False):
+                evt = Quartz.CGEventCreateKeyboardEvent(None, _KEYCODE_DELETE, down)
+                if evt is None:
+                    return InjectResult(False, 'CGEventCreateKeyboardEvent returned None')
+                Quartz.CGEventSetFlags(evt, 0)
+                _mark(Quartz, evt)
+                Quartz.CGEventPost(Quartz.kCGHIDEventTap, evt)
+            time.sleep(_CHUNK_DELAY_S)
+    except Exception as exc:
+        return InjectResult(False, f'cgevent post failed: {exc}')
+    return InjectResult(True, None)

@@ -418,3 +418,95 @@ class TapOutageNoiseTests(unittest.TestCase):
         finally:
             sys.setswitchinterval(saved)
 
+
+
+class ChordTests(unittest.TestCase):
+    """Fn+V re-inserts, Fn+Z undoes — both fire on Fn *release*, because an
+    event posted while Fn is held inherits it and Fn+Delete is forward delete."""
+
+    def _make(self):
+        from hotkey_fn import FnHotkeyListener
+
+        events = []
+
+        def cb(name):
+            return lambda: events.append(name)
+
+        listener = FnHotkeyListener(
+            on_start_cb=cb('start'), on_stop_cb=cb('stop'), on_cancel_cb=cb('cancel'),
+            on_disarm_cb=cb('disarm'), on_reinsert_cb=cb('reinsert'), on_undo_cb=cb('undo'),
+        )
+        return listener, events
+
+    def _settle(self, listener):
+        listener._pump.stop(timeout=1.0)
+
+    def test_fn_z_waits_for_release_then_undoes(self):
+        import hotkey_fn
+
+        listener, events = self._make()
+        listener._handle_fn_down()
+        self.assertTrue(listener._handle_chord(hotkey_fn._KEY_Z))
+        time.sleep(0.05)
+        self.assertNotIn('undo', events)  # not while Fn is held
+        listener._handle_fn_up()
+        self._settle(listener)
+        self.assertIn('undo', events)
+        self.assertNotIn('start', events)
+
+    def test_fn_v_reinserts(self):
+        import hotkey_fn
+
+        listener, events = self._make()
+        listener._handle_fn_down()
+        listener._handle_chord(hotkey_fn._KEY_V)
+        listener._handle_fn_up()
+        self._settle(listener)
+        self.assertEqual(events.count('reinsert'), 1)
+
+    def test_a_chord_during_push_to_talk_discards_the_recording_first(self):
+        import hotkey_fn
+
+        original = hotkey_fn._PENDING_TIMEOUT
+        hotkey_fn._PENDING_TIMEOUT = 0.02
+        try:
+            listener, events = self._make()
+            listener._handle_fn_down()
+            time.sleep(0.1)  # now in push-to-talk
+            listener._handle_chord(hotkey_fn._KEY_Z)
+            listener._handle_fn_up()
+            self._settle(listener)
+        finally:
+            hotkey_fn._PENDING_TIMEOUT = original
+        self.assertEqual([e for e in events if e in ('start', 'cancel', 'stop', 'undo')],
+                         ['start', 'cancel', 'undo'])
+
+    def test_v_without_fn_is_just_typing(self):
+        import hotkey_fn
+
+        listener, events = self._make()
+        self.assertFalse(listener._handle_chord(hotkey_fn._KEY_V))
+        listener._handle_fn_down()
+        listener._handle_fn_up()
+        self._settle(listener)
+        self.assertNotIn('reinsert', events)
+
+    def test_hands_free_is_left_alone(self):
+        import hotkey_fn
+
+        listener, _events = self._make()
+        listener._handle_fn_down()
+        listener._handle_space_down()  # latch hands-free
+        self.assertFalse(listener._handle_chord(hotkey_fn._KEY_V))
+
+    def test_other_letters_are_not_chords(self):
+        listener, _events = self._make()
+        listener._handle_fn_down()
+        self.assertFalse(listener._handle_chord(14))  # E belongs to the emoji picker
+
+    def test_user_inputs_are_counted_not_recorded(self):
+        listener, _events = self._make()
+        self.assertEqual(listener.user_inputs, 0)
+        listener._note_user_input()
+        listener._note_user_input()
+        self.assertEqual(listener.user_inputs, 2)

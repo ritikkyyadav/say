@@ -318,3 +318,55 @@ class RealControllerTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RecallWiringTests(unittest.TestCase):
+    def test_every_entry_point_gets_the_same_full_set_of_callbacks(self):
+        from gestures import GestureBridge
+
+        class C:
+            def set_input_source(self, fn):
+                self.source = fn
+
+        bridge = GestureBridge(C(), object())
+        self.assertEqual(
+            set(bridge.listener_callbacks()),
+            {'on_start', 'on_stop', 'on_cancel', 'on_arm', 'on_disarm', 'on_reinsert', 'on_undo'},
+        )
+
+    def test_the_input_count_follows_the_current_listener(self):
+        from gestures import GestureBridge
+
+        class C:
+            def set_input_source(self, fn):
+                self.source = fn
+
+        class L:
+            user_inputs = 5
+
+        holder = {'listener': None}
+        controller = C()
+        GestureBridge(controller, object(), listener=lambda: holder['listener'])
+        self.assertIsNone(controller.source())  # fallback listener: unknown
+        holder['listener'] = L()
+        self.assertEqual(controller.source(), 5)
+
+    def test_chords_reach_the_controller_and_never_raise(self):
+        from gestures import GestureBridge
+
+        calls = []
+
+        class C:
+            def set_input_source(self, fn):
+                pass
+
+            def reinsert_last(self):
+                calls.append('reinsert')
+
+            def undo_last(self):
+                raise RuntimeError('boom')
+
+        bridge = GestureBridge(C(), object())
+        bridge.on_reinsert()
+        bridge.on_undo()  # must not raise into the hotkey thread
+        self.assertEqual(calls, ['reinsert'])

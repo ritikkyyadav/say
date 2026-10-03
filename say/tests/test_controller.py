@@ -786,3 +786,144 @@ class PressOutcomeTests(unittest.TestCase):
             self._press(self._controller(), how=how)
         for p in self._presses():
             self.assertIn(p['outcome'], PRESS_OUTCOMES)
+
+
+class RecallTests(unittest.TestCase):
+    """Fn+V brings the last dictation back; Fn+Z takes it out, only when safe."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.store = store_module.reset_store_for_tests(os.path.join(self._tmp.name, 't.db'))
+        self.typed = []
+        self.deleted = []
+        self.inputs = 0
+        self.app = 'com.app.a'
+
+    def tearDown(self):
+        store_module.reset_store_for_tests(os.path.join(self._tmp.name, 't.db'))
+        self._tmp.cleanup()
+
+    def _controller(self, inject_ok=True):
+        def injector(text):
+            if inject_ok:
+                self.typed.append(text)
+                return InjectionResult(True, 'accessibility')
+            return InjectionResult(False, 'cgevent', 'denied')
+
+        def backspacer(n):
+            self.deleted.append(n)
+            return InjectionResult(True, 'cgevent')
+
+        c = DictationController(
+            recorder=FakeRecorder([0.05] * config.SAMPLE_RATE * 2),
+            transcriber=FakeTranscriber(), injector=injector, logger=None,
+            backspacer=backspacer,
+        )
+        c.set_input_source(lambda: self.inputs)
+        c.load_model()
+        return c
+
+    def _dictate(self, c):
+        with patch('controller.get_frontmost_app', side_effect=lambda: self.app), \
+                patch('controller.notify_transcription_complete'), \
+                patch('controller.notify_error'):
+            c.start_recording()
+            c.stop_recording()
+
+    def _do(self, fn):
+        with patch('controller.get_frontmost_app', side_effect=lambda: self.app), \
+                patch('controller.notify_error') as notified, \
+                patch.object(DictationController, '_copy_to_clipboard', return_value=True):
+            ok = fn()
+        return ok, notified
+
+    def test_undo_right_after_a_dictation_deletes_exactly_it(self):
+        c = self._controller()
+        self._dictate(c)
+        ok, _ = self._do(c.undo_last)
+        self.assertTrue(ok)
+        self.assertEqual(self.deleted, [len('Hello world.')])
+
+    def test_undo_twice_does_not_delete_twice(self):
+        c = self._controller()
+        self._dictate(c)
+        self._do(c.undo_last)
+        ok, notified = self._do(c.undo_last)
+        self.assertFalse(ok)
+        self.assertEqual(len(self.deleted), 1)
+        notified.assert_called_once()
+
+    def test_a_key_press_since_the_dictation_blocks_undo_and_says_why(self):
+        c = self._controller()
+        self._dictate(c)
+        self.inputs += 1  # the user typed or clicked
+        ok, notified = self._do(c.undo_last)
+        self.assertFalse(ok)
+        self.assertEqual(self.deleted, [])
+        self.assertIn('typed since', notified.call_args[0][0])
+
+    def test_switching_apps_blocks_undo(self):
+        c = self._controller()
+        self._dictate(c)
+        self.app = 'com.app.b'
+        ok, _ = self._do(c.undo_last)
+        self.assertFalse(ok)
+        self.assertEqual(self.deleted, [])
+
+    def test_without_a_tap_to_count_inputs_undo_refuses(self):
+        c = self._controller()
+        c.set_input_source(lambda: None)
+        self._dictate(c)
+        ok, _ = self._do(c.undo_last)
+        self.assertFalse(ok)
+
+    def test_reinsert_types_the_latest_dictation_again(self):
+        c = self._controller()
+        self._dictate(c)
+        ok, _ = self._do(c.reinsert_last)
+        self.assertTrue(ok)
+        self.assertEqual(self.typed, ['Hello world.', 'Hello world.'])
+
+    def test_reinsert_brings_back_a_held_dictation(self):
+        """Focus moved, so it was never typed — the case re-insert exists for."""
+        c = self._controller()
+        with patch('controller.get_frontmost_app', side_effect=['com.app.a', 'com.app.b']), \
+                patch('controller.notify_error'), \
+                patch.object(DictationController, '_copy_to_clipboard', return_value=True):
+            c.start_recording()
+            c.stop_recording()
+        self.assertEqual(self.typed, [])
+        ok, _ = self._do(c.reinsert_last)
+        self.assertTrue(ok)
+        self.assertEqual(self.typed, ['Hello world.'])
+
+    def test_reinsert_prefers_the_users_own_fix(self):
+        c = self._controller()
+        self._dictate(c)
+        tid = self.store.list(limit=1)[0].id
+        self.store.set_manual_correction(tid, 'Hello, wide world.')
+        self._do(c.reinsert_last)
+        self.assertEqual(self.typed[-1], 'Hello, wide world.')
+
+    def test_a_reinserted_text_can_then_be_undone(self):
+        c = self._controller()
+        self._dictate(c)
+        self._do(c.reinsert_last)
+        ok, _ = self._do(c.undo_last)
+        self.assertTrue(ok)
+
+    def test_nothing_happens_mid_recording(self):
+        c = self._controller()
+        with patch('controller.get_frontmost_app', return_value='com.app.a'):
+            c.start_recording()
+            self.assertFalse(c.reinsert_last())
+            self.assertFalse(c.undo_last())
+        self.assertEqual((self.typed, self.deleted), ([], []))
+
+    def test_a_failed_reinsert_falls_back_to_the_clipboard(self):
+        c = self._controller()
+        self._dictate(c)
+        c.injector = lambda t: InjectionResult(False, 'cgevent', 'denied')
+        ok, notified = self._do(c.reinsert_last)
+        self.assertFalse(ok)
+        self.assertIn('clipboard', notified.call_args[0][0])

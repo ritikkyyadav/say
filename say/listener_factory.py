@@ -49,6 +49,8 @@ def try_start_fn_listener(
     on_arm: Callback | None = None,
     on_disarm: Callback | None = None,
     start_timeout: float = 2.0,
+    on_reinsert: Callback | None = None,
+    on_undo: Callback | None = None,
 ) -> tuple[ListenerInfo | None, str | None]:
     """Attempt to start the Fn (CGEventTap) listener.
 
@@ -68,6 +70,8 @@ def try_start_fn_listener(
         on_cancel_cb=on_cancel,
         on_arm_cb=on_arm,
         on_disarm_cb=on_disarm,
+        on_reinsert_cb=on_reinsert,
+        on_undo_cb=on_undo,
     )
     try:
         started = fn.start(timeout=start_timeout)
@@ -192,6 +196,8 @@ def make_listener(
     start_timeout: float = 2.0,
     on_arm: Callback | None = None,
     on_disarm: Callback | None = None,
+    on_reinsert: Callback | None = None,
+    on_undo: Callback | None = None,
 ) -> ListenerInfo:
     """Create and start a hotkey listener, with automatic fallback.
 
@@ -217,6 +223,8 @@ def make_listener(
             on_arm=on_arm,
             on_disarm=on_disarm,
             start_timeout=start_timeout,
+            on_reinsert=on_reinsert,
+            on_undo=on_undo,
         )
         if info is not None:
             return info
