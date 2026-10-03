@@ -56,9 +56,6 @@ PREFERENCE = (
     'moonshine/medium-streaming-en',
     'mlx-community/whisper-large-v3-turbo',
 )
-# Cache namespace: decoded through the engine's own Transcriber, not one of
-# replay_bench's decoder configs.
-CONFIG = 'engine'
 
 
 def second_model(stored_model: str, available: list[str]) -> str | None:
@@ -67,29 +64,6 @@ def second_model(stored_model: str, available: list[str]) -> str | None:
         if model != stored_model:
             return model
     return None
-
-
-def _decode(clips: list[dict[str, Any]], model: str, cache: dict[str, Any]) -> None:
-    """Fill `cache` with `model`'s transcript of each clip. Resumable."""
-    import time
-
-    from transcriber import Transcriber
-
-    engine = Transcriber(model)
-    todo = [c for c in clips if f'{c["id"]}|{CONFIG}|{model}' not in cache]
-    for i, clip in enumerate(todo, 1):
-        audio = replay_bench.read_wav(clip['path'])
-        t0 = time.time()
-        text = engine.transcribe(audio)
-        cache[f'{clip["id"]}|{CONFIG}|{model}'] = {
-            'text': text, 'infer_s': round(time.time() - t0, 3),
-        }
-        if i % 5 == 0:
-            replay_bench._save_cache(cache)
-        print(f'\r    {i}/{len(todo)}', end='', flush=True)
-    if todo:
-        print()
-    replay_bench._save_cache(cache)
 
 
 def _snippets(stored: str, other: str, limit: int = 3) -> list[tuple[str, str]]:
@@ -147,14 +121,14 @@ def main() -> int:
               'stronger second opinion.)')
     for model, clips in by_model.items():
         print(f'  second opinion from {model.split("/")[-1]} on {len(clips)} clips')
-        _decode(clips, model, cache)
+        replay_bench.decode_with_engine(clips, model, cache)
 
     pairs = []
     for clip in corpus:
         chosen = second_model(clip['model'], available)
         if chosen is None:
             continue
-        hit = cache.get(f'{clip["id"]}|{CONFIG}|{chosen}')
+        hit = cache.get(replay_bench.engine_key(clip['id'], chosen))
         if not hit:
             continue
         # Both sides through the same clean-up, so a formatting or vocabulary

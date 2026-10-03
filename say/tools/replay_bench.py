@@ -344,6 +344,55 @@ def _transcribe_chunked(
     return ' '.join(parts).strip(), tail_seconds
 
 
+_UNSET = object()
+
+
+def engine_key(clip_id: int, model: str, language: Any = _UNSET) -> str:
+    """Cache key for a decode through the engine's own Transcriber.
+
+    `language` left unset means "whatever the user's settings say", which is
+    what the review queue decodes with; an explicit language gets its own key
+    so a benchmark arm never reads another arm's text.
+    """
+    tag = 'engine' if language is _UNSET else f'engine:{language or "auto"}'
+    return f'{clip_id}|{tag}|{model}'
+
+
+def decode_with_engine(
+    clips: list[dict[str, Any]], model: str, cache: dict[str, Any], *, language: Any = _UNSET,
+) -> None:
+    """Fill `cache` with `model`'s transcript of each clip, the way the app decodes.
+
+    Through `transcriber.Transcriber`, so prompts, the silence gate, the
+    hallucination filter and the backend are exactly what a real dictation
+    gets — not a lab configuration. Resumable: decoded clips are skipped.
+    """
+    from transcriber import Transcriber
+
+    todo = [c for c in clips if engine_key(c['id'], model, language) not in cache]
+    if not todo:
+        return
+    saved_language = config.LANGUAGE
+    if language is not _UNSET:
+        config.LANGUAGE = language
+    try:
+        engine = Transcriber(model)
+        for i, clip in enumerate(todo, 1):
+            audio = read_wav(clip['path'])
+            t0 = time.time()
+            text = engine.transcribe(audio)
+            cache[engine_key(clip['id'], model, language)] = {
+                'text': text, 'infer_s': round(time.time() - t0, 3),
+            }
+            if i % 5 == 0:
+                _save_cache(cache)
+            print(f'\r    {i}/{len(todo)}', end='', flush=True)
+        print()
+    finally:
+        config.LANGUAGE = saved_language
+        _save_cache(cache)
+
+
 def score_stored(corpus: list[dict[str, Any]]) -> Score:
     score = Score()
     for clip in corpus:
