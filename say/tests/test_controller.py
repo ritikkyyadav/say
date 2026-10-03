@@ -927,3 +927,81 @@ class RecallTests(unittest.TestCase):
         ok, notified = self._do(c.reinsert_last)
         self.assertFalse(ok)
         self.assertIn('clipboard', notified.call_args[0][0])
+
+
+class IdleMemoryTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        store_module.reset_store_for_tests(os.path.join(self._tmp.name, 't.db'))
+        self._saved = config.MODEL_IDLE_UNLOAD_S
+
+    def tearDown(self):
+        config.MODEL_IDLE_UNLOAD_S = self._saved
+        store_module.reset_store_for_tests(os.path.join(self._tmp.name, 't.db'))
+        self._tmp.cleanup()
+
+    class Tracking(FakeTranscriber):
+        def __init__(self):
+            super().__init__()
+            self.released = 0
+            self.unloaded = 0
+
+        def release_cache(self):
+            self.released += 1
+
+        def unload_idle(self):
+            self.unloaded += 1
+            return True
+
+    def _run(self, delay):
+        config.MODEL_IDLE_UNLOAD_S = delay
+        tx = self.Tracking()
+        c = DictationController(
+            recorder=FakeRecorder([0.05] * config.SAMPLE_RATE * 2), transcriber=tx,
+            injector=lambda t: InjectionResult(True, 'accessibility'), logger=None,
+        )
+        c.load_model()
+        with patch('controller.get_frontmost_app', return_value='a'), \
+                patch('controller.notify_transcription_complete'):
+            c.start_recording()
+            c.stop_recording()
+        return c, tx
+
+    def test_the_cache_is_released_after_every_dictation(self):
+        c, tx = self._run(0)
+        self.assertEqual(tx.released, 1)
+        self.assertIsNone(c._idle_timer)  # 0 disables the idle unload
+
+    def test_a_quiet_engine_unloads_and_a_new_press_cancels_it(self):
+        c, tx = self._run(600)
+        self.assertIsNotNone(c._idle_timer)
+        with patch('controller.get_frontmost_app', return_value='a'):
+            c.start_recording()
+        self.assertIsNone(c._idle_timer)
+        c.cancel_recording()
+
+    def test_the_unload_waits_while_someone_is_dictating(self):
+        c, tx = self._run(600)
+        with patch('controller.get_frontmost_app', return_value='a'):
+            c.start_recording()
+            c._unload_if_idle()
+        self.assertEqual(tx.unloaded, 0)
+        self.assertIsNotNone(c._idle_timer)  # looks again later
+        c.cancel_recording()
+        c._cancel_idle_unload()
+
+    def test_an_idle_engine_unloads(self):
+        c, tx = self._run(600)
+        c._cancel_idle_unload()
+        c._unload_if_idle()
+        self.assertEqual(tx.unloaded, 1)
+
+    def test_an_engine_that_is_never_used_still_unloads(self):
+        config.MODEL_IDLE_UNLOAD_S = 600
+        c = DictationController(
+            recorder=FakeRecorder([0.0]), transcriber=self.Tracking(),
+            injector=lambda t: InjectionResult(True, 'accessibility'), logger=None,
+        )
+        c.load_model()
+        self.assertIsNotNone(c._idle_timer)
+        c._cancel_idle_unload()

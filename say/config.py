@@ -58,6 +58,12 @@ SAMPLE_RATE = 16000            # Whisper expects 16 kHz mono audio
 # default (15 min) so normal long-form dictation is never clipped mid-sentence;
 # raise it (user-overridable via settings) if you routinely dictate longer.
 MAX_RECORDING_SECONDS = 900
+
+# Seconds without a dictation before the Whisper weights are dropped from
+# memory. Measured 2026-10-03: the idle engine held 3.7 GB of a 16 GB Mac;
+# unloading freed ~2.1 GB and the next dictation's decode took 0.07 s longer,
+# because mlx-whisper reloads from the file cache on its own. 0 disables.
+MODEL_IDLE_UNLOAD_S = 600
 # Shorter clips are ignored. 0.4 until Oct 2026: of the 20 stored dictations
 # under one second, 19 were decoder inventions ("Monica Monica.", "CALD C.")
 # and one was a single word. A tap that short is an accident, not a dictation.

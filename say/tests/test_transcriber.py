@@ -286,3 +286,71 @@ class SilenceGateTests(unittest.TestCase):
 
     def test_an_unmeasurable_buffer_is_decoded_not_dropped(self):
         self.assertFalse(transcriber._is_silent(object()))
+
+
+class CallFloorTests(unittest.TestCase):
+    """Whisper pads every call to 30 s, so ~2.1-2.3 s is the cost of any call.
+    Judged by RTF alone, every short clip looked like a throttled machine."""
+
+    def test_a_short_clip_at_the_call_floor_is_not_slow(self):
+        import transcriber
+
+        with self.assertLogs('say.transcriber', level='INFO') as logs:
+            transcriber.note_realtime(1.2, 2.1, 'whisper')
+        self.assertFalse(any('WARNING' in line for line in logs.output))
+
+    def test_a_short_clip_far_past_the_floor_still_warns(self):
+        import transcriber
+
+        with self.assertLogs('say.transcriber', level='WARNING') as logs:
+            transcriber.note_realtime(2.0, 9.0, 'whisper')
+        self.assertTrue(any('below real time' in line for line in logs.output))
+
+
+class MemoryReleaseTests(unittest.TestCase):
+    """Measured: the idle engine held 3.7 GB. The cache and the weights can both
+    be given back without anyone waiting for it."""
+
+    def _whisper(self):
+        t = transcriber.Transcriber('mlx-community/whisper-small-mlx')
+        t._loaded = True
+        t._backend = 'whisper-mlx'
+        return t
+
+    def test_unload_drops_the_weights_and_keeps_the_transcriber_ready(self):
+        import sys
+        import types
+        from unittest.mock import patch
+
+        holder = types.SimpleNamespace(model=object(), model_path='m')
+        cleared = []
+        fake_tx = types.ModuleType('mlx_whisper.transcribe')
+        fake_tx.ModelHolder = holder
+        fake_core = types.ModuleType('mlx.core')
+        fake_core.clear_cache = lambda: cleared.append(True)
+        fake_mlx = types.ModuleType('mlx')
+        fake_mlx.core = fake_core
+        with patch.dict(sys.modules, {'mlx_whisper.transcribe': fake_tx, 'mlx': fake_mlx,
+                                      'mlx.core': fake_core}):
+            t = self._whisper()
+            self.assertTrue(t.unload_idle())
+            self.assertIsNone(holder.model)
+            self.assertTrue(t._loaded)  # mlx-whisper reloads on its own; no warm-up again
+            self.assertFalse(t.unload_idle())  # nothing left to drop
+            t.release_cache()
+        self.assertEqual(len(cleared), 2)
+
+    def test_other_backends_are_left_alone(self):
+        t = transcriber.Transcriber('moonshine/medium-streaming-en')
+        t._backend = 'moonshine'
+        self.assertFalse(t.unload_idle())
+        t.release_cache()  # no-op, no raise
+
+    def test_a_missing_runtime_never_raises(self):
+        import sys
+        from unittest.mock import patch
+
+        with patch.dict(sys.modules, {'mlx_whisper.transcribe': None, 'mlx.core': None}):
+            t = self._whisper()
+            self.assertFalse(t.unload_idle())
+            t.release_cache()

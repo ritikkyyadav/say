@@ -103,11 +103,21 @@ def _normalize_for_filter(text: str) -> str:
 SLOW_RTF = 1.0
 _SLOW_MIN_AUDIO_SECONDS = 1.0
 
+# What one decoder call costs however little audio it is given. Whisper pads
+# every call to a 30-second window, so on this hardware anything up to 30 s
+# takes ~2.1-2.3 s (measured 2026-10-03: 1.2 s of audio -> 2.07 s, 29.6 s ->
+# 2.29 s). Judged by RTF alone, every short clip "fell below real time", which
+# is what most of the 25 such warnings since Sep 7 were. A decode is only slow
+# when it is slow *for that call*.
+_CALL_FLOOR_S = {'whisper': 2.3, 'whisper-mlx': 2.3}
+_FLOOR_MARGIN = 1.5
+
 
 def note_realtime(audio_seconds: float, elapsed: float, backend: str) -> float:
     """Log the decode timing; warn when it fell below real time. Returns the RTF."""
     rtf = elapsed / audio_seconds if audio_seconds > 0 else 0.0
-    if audio_seconds >= _SLOW_MIN_AUDIO_SECONDS and rtf > SLOW_RTF:
+    floor = _CALL_FLOOR_S.get(backend, 0.0) * _FLOOR_MARGIN
+    if audio_seconds >= _SLOW_MIN_AUDIO_SECONDS and rtf > SLOW_RTF and elapsed > floor:
         _log.warning(
             'Decoding fell below real time: %.1fs of audio took %.1fs (RTF %.2f, %s) — '
             'the machine is throttled or under memory pressure',
@@ -398,6 +408,55 @@ class Transcriber:
             self._model_path = new_model_path
             self._loaded = False
             self._backend = None
+
+    # ── memory (measured 2026-10-03, see CLAUDE.md) ──────────────────
+
+    def release_cache(self) -> None:
+        """Give back MLX's buffer cache, keeping the model loaded. Never raises.
+
+        The cache grows with every decode: one process went 2.3 GB -> 4.1 GB
+        over seven clips, and the shipped engine sat at 3.7 GB idle. Clearing
+        it freed 2.3 GB with the model still in place and the next decode took
+        2.17 s against 2.05-2.12 s before — so it runs after a dictation has
+        landed, off the path anyone waits on.
+        """
+        if self._backend != 'whisper-mlx':
+            return
+        try:
+            import mlx.core as mx
+
+            mx.clear_cache()
+        except Exception:
+            _log.debug('MLX cache release skipped', exc_info=True)
+
+    def unload_idle(self) -> bool:
+        """Drop the Whisper weights while nobody is dictating. Never raises.
+
+        mlx-whisper keeps the model on a class-level holder and reloads it on
+        the next call if it is empty, so `_loaded` stays True and nothing has
+        to warm up again: the first decode after an unload measured 2.13 s
+        against 2.06 s warm. Freed ~2.1 GB. Returns True when it unloaded.
+        """
+        if self._backend != 'whisper-mlx':
+            return False
+        try:
+            import gc
+
+            import mlx.core as mx
+            from mlx_whisper.transcribe import ModelHolder
+
+            with self._lock:
+                if ModelHolder.model is None:
+                    return False
+                ModelHolder.model = None
+                ModelHolder.model_path = None
+            gc.collect()
+            mx.clear_cache()
+            _log.info('Whisper weights unloaded while idle; they reload on the next dictation')
+            return True
+        except Exception:
+            _log.debug('Idle unload skipped', exc_info=True)
+            return False
 
     def transcribe(self, audio, prompt_override: str | None = None) -> str:
         """Transcribe an audio buffer to text.

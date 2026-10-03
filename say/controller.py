@@ -139,6 +139,8 @@ class DictationController:
         self._last_delivery: recall.Delivery | None = None
         # Key presses + clicks seen by the Fn tap; None when no tap can see them.
         self._input_source: Callable[[], int | None] = lambda: None
+        # Drops the model after MODEL_IDLE_UNLOAD_S of quiet (transcriber.unload_idle).
+        self._idle_timer: threading.Timer | None = None
 
         set_event = getattr(recorder, 'set_event_callback', None)
         if callable(set_event):
@@ -289,6 +291,8 @@ class DictationController:
             if callable(load):
                 load()
             self._emit(DictationState.READY, 'Ready — Fn to dictate')
+            # An engine launched and never used should not hold its model forever.
+            self._schedule_idle_unload()
             return True
         except Exception as exc:
             message = f'Model load failed: {exc}'
@@ -333,6 +337,7 @@ class DictationController:
                 _log.info('start_recording rejected — already in %s', self.state)
                 refused_in = self.state.value
             else:
+                self._cancel_idle_unload()
                 self._recording = True
                 self._recording_mode = mode
                 self._press_open = True
@@ -372,6 +377,46 @@ class DictationController:
 
     def stop_recording(self) -> bool:
         """Stop recording, transcribe locally, and inject the result."""
+        try:
+            return self._stop_and_deliver()
+        finally:
+            self._after_dictation()
+
+    def _after_dictation(self) -> None:
+        """Memory housekeeping once the words have landed, off anyone's wait."""
+        release = getattr(self.transcriber, 'release_cache', None)
+        if callable(release):
+            try:
+                release()
+            except Exception:
+                _log.debug('release_cache raised', exc_info=True)
+        self._schedule_idle_unload()
+
+    def _cancel_idle_unload(self) -> None:
+        timer, self._idle_timer = self._idle_timer, None
+        if timer is not None:
+            timer.cancel()
+
+    def _schedule_idle_unload(self) -> None:
+        self._cancel_idle_unload()
+        delay = float(getattr(config, 'MODEL_IDLE_UNLOAD_S', 0) or 0)
+        if delay <= 0 or not callable(getattr(self.transcriber, 'unload_idle', None)):
+            return
+        timer = threading.Timer(delay, self._unload_if_idle)
+        timer.daemon = True
+        self._idle_timer = timer
+        timer.start()
+
+    def _unload_if_idle(self) -> None:
+        if self._busy() is not None:
+            self._schedule_idle_unload()  # someone is dictating; look again later
+            return
+        try:
+            self.transcriber.unload_idle()
+        except Exception:
+            _log.debug('unload_idle raised', exc_info=True)
+
+    def _stop_and_deliver(self) -> bool:
         with self._lock:
             if not self._recording:
                 return False
