@@ -90,6 +90,12 @@ class RecordingsConfigRequest(BaseModel):
     max_bytes: int | None = None
 
 
+class SnippetsRequest(BaseModel):
+    """Body for POST /snippets — the whole set, trigger -> text."""
+
+    snippets: dict[str, str]
+
+
 class CorrectionRequest(BaseModel):
     """Body for POST /transcripts/{id}/correction — the user's own version."""
 
@@ -299,6 +305,32 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
                 model_manager.get_manager().active_model()
             ),
         }
+
+    @app.get('/snippets')
+    async def get_snippets(request: Request) -> dict[str, Any]:
+        import config as config_mod
+        import snippets as snippets_mod
+
+        _check_auth(app, request)
+        return {
+            'snippets': dict(getattr(config_mod, 'SNIPPETS', None) or {}),
+            'min_trigger_words': snippets_mod.MIN_TRIGGER_WORDS,
+            'max_snippets': snippets_mod.MAX_SNIPPETS,
+        }
+
+    @app.post('/snippets')
+    async def set_snippets(request: Request, body: SnippetsRequest) -> dict[str, Any]:
+        """Replace the whole set. Validated before anything is written."""
+        import settings as settings_mod
+        import snippets as snippets_mod
+
+        _check_auth(app, request)
+        try:
+            cleaned = snippets_mod.check(body.snippets)
+        except snippets_mod.BadSnippet as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        settings_mod.set_value('SNIPPETS', cleaned)
+        return await get_snippets(request)
 
     @app.get('/language')
     async def get_language(request: Request) -> dict[str, Any]:

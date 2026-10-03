@@ -128,6 +128,11 @@ DICTIONARY: list[str] = []
 # when a term is mangled in a way phonetic matching won't catch.
 DICTIONARY_REPLACEMENTS: dict[str, str] = {}
 
+# Say a trigger as the whole dictation and its text is typed instead
+# ("insert my calendar link" -> the URL). Whole utterance only, two words or
+# more, typed verbatim. See snippets.py.
+SNIPPETS: dict[str, str] = {}
+
 # -- Learning from corrections --------------------------------
 # Every layer between the microphone and the document is a bet about what you
 # meant. This is the scorecard: a few seconds after Say types, it reads the

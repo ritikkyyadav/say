@@ -519,7 +519,10 @@ class DictationController:
         except Exception:
             _log.debug('Could not capture pipeline provenance', exc_info=True)
             pipeline = {}
-        text = self._postprocess(text, target_app)
+        expansion = self._snippet_for(text)
+        # A snippet is text the user wrote, typed verbatim; anything else is
+        # what we heard, and goes through the clean-up.
+        text = expansion if expansion is not None else self._postprocess(text, target_app)
         if not text:
             self._close_press(
                 'nothing_to_insert', audio_seconds=round(duration, 3),
@@ -901,6 +904,16 @@ class DictationController:
             bool(text), complete, attempted,
         )
         return self.transcriber.transcribe(audio)
+
+    @staticmethod
+    def _snippet_for(spoken: str) -> str | None:
+        try:
+            import snippets
+
+            return snippets.match(spoken, getattr(config, 'SNIPPETS', None) or {})
+        except Exception:
+            _log.debug('Snippet lookup failed; dictating normally', exc_info=True)
+            return None
 
     def _postprocess(self, text: str, target_app: str | None) -> str:
         """Deterministic clean-up between transcription and injection.
