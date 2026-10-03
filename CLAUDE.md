@@ -24,7 +24,7 @@ cd desktop && npm install
 npm run tauri:dev                                # Vite dev server + Tauri window (port 1420)
 
 # ── Testing ──
-~/.venvs/say/bin/python -m pytest say/tests/     # 43 modules, 792 tests, <12s
+~/.venvs/say/bin/python -m pytest say/tests/     # 45 modules, 813 tests, <12s
 SAY_CI=1 pytest say/tests/                       # CI mode: skips pyobjc-tap tests needing Accessibility
 # Always pytest, never `unittest discover`: tests/conftest.py redirects every user-data
 # path (ledger, settings, store, model caches) into a temp dir, and only pytest runs it.
@@ -43,6 +43,7 @@ python say/tools/readback_probe.py               # type a probe into the focused
 python say/tools/disagreement_mine.py --sample 40   # second-opinion decode -> the app's "To review" queue
 python say/tools/health_report.py --weeks 8      # engine warnings per week, from say.log
 python say/tools/scorecard.py                    # the six-category product score, from what Say actually did
+python say/tools/accuracy_bench.py               # word error rate per installed model on the clips you corrected (held-out third)
 
 # ── Overlay (the dictation glyph) ──
 python say/tools/waveform_bench.py --stats               # per-band levels over the corpus
@@ -111,7 +112,7 @@ cd desktop && make dmg                           # → Say_0.1.0_aarch64.dmg (un
 |------|---------|-------------|
 | `app.py` | Both entry points. `SayApp` = menu-bar (rumps). `_run_server_only()` = the **shipped sidecar** mode: also builds the sleep/lock + device watchers **and the overlay** via `_setup_sidecar_ui()` and runs a Cocoa event loop (accessory policy, no Dock icon). The overlay is late-bound through `overlay_slot` because the hotkey is wired long before a run loop exists to hang a window off. | `SayApp(rumps.App)`, `main()`, `_run_server_only()`, `_setup_sidecar_ui()` |
 | `main.py` | Terminal/debug entry point (no menu bar). | `main()` |
-| `controller.py` | State machine coordinating record → **postprocess** → inject. Thread-safe via RLock. **Persists the transcript BEFORE injecting** and updates the row via `store.set_outcome()`, so a failed insert can never lose the user's words; failed text also goes to the clipboard. Best-effort `_save_recording()` runs either way. **Every key press records exactly one outcome** (`record_press`, `_close_press`) in the metrics ledger — the denominator of the reliability score. `cancel_recording(reason='system')` for sleep/lock. `reinsert_last()` / `undo_last()` (see recall.py); `set_input_source()` takes the tap's input count. After every dictation it releases MLX's cache and arms `MODEL_IDLE_UNLOAD_S`. | `DictationController` — `.can_start_recording()` (the acceptance rule, shared with `start_recording()`), `DictationState(Enum)`, `DictationEvent(dataclass)` (+ `.progress`), `focus_policy(started_in, now_in) → 'inject' \| 'hold'`, `PRESS_OUTCOMES`, `record_press(outcome, **fields)`, `.reinsert_last()`, `.undo_last()`, `.set_input_source(fn)` |
+| `controller.py` | State machine coordinating record → **postprocess** → inject. Thread-safe via RLock. **Persists the transcript BEFORE injecting** and updates the row via `store.set_outcome()`, so a failed insert can never lose the user's words; failed text also goes to the clipboard. Best-effort `_save_recording()` runs either way. **Every key press records exactly one outcome** (`record_press`, `_close_press`) in the metrics ledger — the denominator of the reliability score. `cancel_recording(reason='system')` for sleep/lock. `reinsert_last()` / `undo_last()` (see recall.py); `set_input_source()` takes the tap's input count. After every dictation it releases MLX's cache and arms `MODEL_IDLE_UNLOAD_S`. A snippet trigger (`config.SNIPPETS`) replaces the dictation before post-processing. | `DictationController` — `.can_start_recording()` (the acceptance rule, shared with `start_recording()`), `DictationState(Enum)`, `DictationEvent(dataclass)` (+ `.progress`), `focus_policy(started_in, now_in) → 'inject' \| 'hold'`, `PRESS_OUTCOMES`, `record_press(outcome, **fields)`, `.reinsert_last()`, `.undo_last()`, `.set_input_source(fn)` |
 | `gestures.py` | **The seam between the hotkey listener and everything it drives** — one `GestureBridge` used by both entry points instead of five ad-hoc closures apiece. Key down asks `controller.can_start_recording()` *before* it shows the glyph or opens the mic; a refused `start_recording()` retracts the glyph, closes the mic and `force_idle()`s the listener; state events route to the overlay through the same object. `overlay_do()` swallows every overlay failure and warns once per action. Pure Python, no threads of its own, never raises into a hotkey thread. `listener_callbacks()` is the one typed set (`ListenerCallbacks`) every entry point unpacks — including `on_reinsert`/`on_undo`. ERROR now routes to `overlay.fail()`. | `GestureBridge(controller, recorder, overlay=getter, listener=getter)` — `.on_arm()`, `.on_disarm()`, `.on_start()`, `.on_stop()`, `.on_cancel()`, `.on_status(event)`, `.overlay_do(action, *args)`, `.listener_callbacks()`, `.on_reinsert()`, `.on_undo()`, `ListenerCallbacks` |
 | `callback_pump.py` | **One ordered worker per hotkey listener.** A thread per callback let a quick release's `on_stop` overtake its own `on_start` and leave a recording nothing stopped; the pump runs callbacks in the order a human produced them, starts lazily, logs a raising callback and keeps going. | `CallbackPump(name)` — `.fire(cb)`, `.stop(timeout)`, `.running` |
 | `audio.py` | 16kHz mono mic stream. `arm()`/`disarm()` open the mic on hotkey-*down* so the pre-roll ring buffer is already filling before the tap/hold window resolves (without them pre-roll contributed 0 samples and the first word was lost). Otherwise **live only during a recording** (opens on `start()`, closes ~0.6s after `stop()` via debounced `_schedule_close` so the macOS mic indicator goes dark when idle). Back-to-back dictations reuse the open stream; reopen retries w/ backoff + PortAudio reset to dodge CoreAudio's -9986 race. **`start()` opens the device BEFORE marking the recording live** — the reopen can block seconds and anything captured in that window is lost. `live_seconds` reports callback-delivered audio only (excludes the pre-roll seed) so the controller can reject a clip the mic never contributed to. `set_monitor_callback()` is a live tap that fires **before** the not-capturing early return, so the overlay is already responding during the armed window. | `AudioRecorder` — `.start()`, `.stop() → np.ndarray`, `.cancel()`, `.shutdown()`, `.live_seconds`, `.set_amplitude_callback()`, `.set_event_callback()`, `.set_segment_callback()`, `.set_monitor_callback()`, `.pop_tail()`, `.arm()`, `.disarm()` |
@@ -137,6 +138,7 @@ cd desktop && make dmg                           # → Say_0.1.0_aarch64.dmg (un
 | `text_inject_clipboard.py` | NSPasteboard + Cmd+V fallback. Snapshots **every item and type** on the pasteboard and restores them all (string-only fallback). 30ms pre-paste, 200ms post-paste settle. | `inject_text_clipboard(text) → InjectResult`, `snapshot_pasteboard(pb)`, `restore_pasteboard(pb, snapshot, AppKit)` |
 | `hotkey.py` | pynput-based global hotkey listener. Tap-to-toggle: hold <0.30s → hands-free, hold ≥0.30s → PTT, Esc cancels. | `HotkeyListener` — `.start(timeout)`, `.stop()`, `.force_idle()`, `.mode`, `parse_hotkey(str)` |
 | `hotkey_fn.py` | CGEventTap Fn-key listener. **Any key other than Space/Esc while Fn is held cancels the gesture** (Fn+arrows are Home/End/PageUp/Down — they used to start phantom recordings that could inject ambient speech). Fires `on_arm`/`on_disarm` so the recorder can pre-fill pre-roll. Fn hold → PTT; **tap Space anytime while Fn held** (PENDING *or* already in PTT) → latches hands-free (release Fn, talk, press Fn to stop) — not a sub-250ms chord; Esc cancels. Swallows Fn/Space/Esc events. **Fn+V / Fn+Z** are chords (macOS assigns neither) that fire on Fn *release* — an event posted while Fn is held inherits it, and Fn+Delete is forward delete. Counts key presses that reach an app and mouse clicks (`user_inputs`), never which. | `FnHotkeyListener` — `.start(timeout)`, `.stop()`, `.force_idle()`, `.mode`; `apply_low_latency_switch_interval()`, `.user_inputs` |
+| `snippets.py` | **Say a short phrase, type a longer text you saved.** Fires only when the trigger is the whole utterance (case and Whisper's punctuation ignored), needs two words or more, and is typed verbatim past post-processing. `check()` validates a whole set for the API. Pure. | `match(spoken, snippets)`, `check(snippets)`, `normalise()`, `BadSnippet`, `MIN_TRIGGER_WORDS` |
 | `recall.py` | **Getting the last dictation back, and taking it back out.** Fn+V re-inserts the newest transcript (held or failed ones included, the user's own fix preferred); Fn+Z deletes what Say just typed with one Backspace per character — only with the same app frontmost, no key press or click since (the Fn tap counts them, never which), inside `UNDO_WINDOW_S`, and every character one Backspace wide. Any doubt refuses with the reason. Pure. | `Delivery`, `undo_refusal(last, now=, frontmost=, keystrokes=)`, `backspaces_for(text)`, `UNDO_WINDOW_S` |
 | `listener_factory.py` | Auto-selects best hotkey listener (Fn first, pynput fallback) and watches for a late Accessibility grant to upgrade in place. | `make_listener(...) → ListenerInfo(listener, kind, label, fell_back)`, `try_start_fn_listener(...) → (info, error)`, `ListenerUpgrader(start_fn, on_upgraded)` |
 | `fn_override.py` | Temporarily sets AppleFnUsageType=0 to suppress macOS globe-key action. Crash-safe: persists backup to disk before mutation. | `acquire()`, `release()` |
@@ -262,6 +264,8 @@ type Recording = { id: number; ts_utc: string; text: string; word_count: number;
 type RecordingsConfig = { save_recordings: boolean; retention_mode: RetentionMode; retention_days: number; max_bytes: number; total_bytes: number; count: number };
 | `/transcripts/{id}/correction` | POST | body `{ text }` | `Correction` (`source: 'manual'`) — the user's own version; replaces an earlier one; `transcripts.text` is untouched. 400 empty or over 100k chars, 404 unknown id. **Declared `def`** (CPU-bound alignment) |
 | `/transcripts/{id}/correction` | DELETE | — | `{ deleted: bool }` |
+| `/snippets` | GET | — | `{ snippets: {trigger: text}, min_trigger_words, max_snippets }` |
+| `/snippets` | POST | body `{ snippets }` | Same shape. Replaces the whole set; validated first (400 with the reason, nothing written) |
 type RecordingsConfigPatch = Partial<Pick<RecordingsConfig, 'save_recordings' | 'retention_mode' | 'retention_days' | 'max_bytes'>>;
 ```
 
@@ -454,6 +458,19 @@ type RecordingsConfigPatch = Partial<Pick<RecordingsConfig, 'save_recordings' | 
   `'how are they ellen': 'well hi there LLM'`). Back-tested against the stored transcripts, one rule
   recurred (`cloud code`, 26 times), ten matched nothing and most of the rest matched a single
   dictation. Shipped defaults are empty; back-test a rule against the corpus before it goes anywhere.
+- **Isolation is re-asserted before every test, and the real settings file is watched.** On
+  2026-10-04 a test run wrote a fake snippet into the developer's real `settings.json`. Cause:
+  `test_single_instance` reloaded `settings` (which resets every path to the real files) and re-pointed
+  only `SETTINGS_DIR`, and conftest redirected once per session — so every later test that saved a
+  setting saved it for real. conftest now re-applies the redirects before each test and fails the run if
+  the real `settings.json` changes during it. Two related rules: a tool applies the user's settings in
+  `main()`, never at import (importing one at collection time used to pull the real model and theme into
+  the run), and a test must not depend on the machine's live state — the injector tests failed whenever
+  the screen was locked, because secure input turns on.
+- **The engine-path decode is shared and cached.** `replay_bench.decode_with_engine()` decodes clips
+  through the real `Transcriber` (prompts, silence gate, filter) and caches them under
+  `engine_key(id, model, language)`, so the review queue and the accuracy benchmark reuse each other's
+  work. A language override gets its own key so arms never read each other's text.
 - **Whisper's wait has a floor, and it is the call, not the audio.** mlx-whisper pads every call to a
   30-second window, so on this Mac any clip up to 30 s decodes in 2.05–2.3 s (measured: 1.2 s → 2.07 s,
   29.6 s → 2.29 s). The ~2 s median wait after release *is* that floor: shortening streaming tails cannot
@@ -946,6 +963,7 @@ Security model: loopback-only API (127.0.0.1), per-launch random Bearer token (`
   and the Fn key are all perfectly fine, because the *engine* is exactly what got installed. Diagnose
   with `PlistBuddy -c "Print :CFBundleIdentifier" /Applications/Say.app/Contents/Info.plist` and by
 MODEL_IDLE_UNLOAD_S = 600                         # drop the Whisper weights after this long idle (~2.1 GB back); 0 disables
+SNIPPETS: dict[str, str] = {}                     # trigger -> text; whole utterance only, 2+ words, typed verbatim (snippets.py)
   checking whether `Contents/Resources/SayEngine.app` exists. The engine image is now
   `SayEngine-v…-internal.dmg` with no drop-link and is no longer built by `make all`; install with
   `cd desktop && make install`, which refuses anything that isn't the shell.
@@ -1016,13 +1034,13 @@ permission story.
 
 ## Testing
 
-43 test modules, 792 tests, <12s runtime. Run: `pytest say/tests/` — **pytest, never `unittest discover`** (the isolation fixture in `tests/conftest.py` and the fixture-based modules only run under pytest).
+45 test modules, 813 tests, <12s runtime. Run: `pytest say/tests/` — **pytest, never `unittest discover`** (the isolation fixture in `tests/conftest.py` and the fixture-based modules only run under pytest).
 (19 skip under `SAY_CI=1`: the ones that need a window server or Accessibility.)
 
 | Module | Tests | Covers |
 |--------|-------|--------|
 | `test_api.py` | 28 | FastAPI endpoints, auth, CORS, model mgmt routes (incl. 507/cancel), recordings (audio roundtrip/config/export/delete), **`/language` get/set/auto/400 + persistence**, the focus and its groups in GET, a focus applying its default language, a focus with a pinned language, a bad focus refused with nothing written |
-| `test_conftest_isolation.py` | 5 | **The suite never touches real user files**: ledger, settings, store and model caches all resolve under the session temp root; the real paths are named so a regression says whose data it would have written |
+| `test_conftest_isolation.py` | 8 **Importing a tool applies no settings**, and **a settings reload in one test cannot leak into the next** (the per-test re-redirect). | **The suite never touches real user files**: ledger, settings, store and model caches all resolve under the session temp root; the real paths are named so a regression says whose data it would have written |
 | `test_callback_pump.py` | 8 | Ordered hotkey callbacks: a slow start followed by an instant stop completes `[start, stop]`, a raising callback does not stop later ones, stop is idempotent and safe from inside a callback, both listeners route through it |
 | `test_languages.py` | 13 | Code normalisation (`en-US` → `en`, `auto` → None, garbage refused), Hindi offered, a bad persisted value tolerated, Whisper honours the setting and Moonshine does not; **the four focuses**, every focus code is a known language, English is pinned and the rest detect, Hindi and Urdu sit in the South Asian focus, recommended models are in the catalogue, an unknown focus is refused and `current_focus()` falls back from the language |
 | `test_notifications.py` | 2 | The switch is read at call time; text still travels as argv |
@@ -1131,6 +1149,8 @@ This CLAUDE.md is a living document. Agents **must** update it when they:
 | `test_manual_corrections.py` | 23 | **The label source that does not need the read-back.** `word_errors` counts trailing misses that `diff()` would call continuation; saving keeps what Say produced and stores the pair; saving again replaces; unchanged text records "checked, right"; **a manual correction does not move the read-back rate**; routes: 404/400/401, line breaks survive, DELETE undoes, and the routes are not coroutines |
 | `test_review_queue.py` | 19 | Ranking (agreement is not queued, case/punctuation is not disagreement, short clips excluded, bounded), the queue file (beside the DB, 0600, **holds no transcript text**, corrupt = empty), the feed (`review` set, cleared once the user has checked, a corrupt queue cannot break `/transcripts`), plus the pure halves of `readback_probe` (timing vs unreadable vs reformatted) and `health_report` (weekly tally) |
 | `test_suggestions.py` | 10 | A one-word pair is widened with the following word (else the preceding one), a lone word says it could not be, formatting-only and continuation yield nothing, repeats are counted across days and against the whole corpus, two different fixes for one phrase are conflicts, **a transcript checked and left alone counts against a rule**, nothing is suggested until `should_suggest` says yes, an existing rule is not offered again |
+| `test_snippets.py` | 13 | Whole utterance or nothing (a trigger inside a sentence never fires), case and punctuation ignored, Hindi triggers, one-word and duplicate triggers refused, the expansion typed verbatim past post-processing, ordinary dictation untouched, the API refuses a bad set with nothing written |
+| `test_accuracy_bench.py` | 5 | Newest third held out, word error rate counts substitutions and missed trailing words but not case or punctuation, the recommendation uses the held-out number and names a faster near-tie without inventing one |
 | `test_recall.py` | 8 | **Undo may never delete the user's text**: allowed only with no key press or click since, the same app, inside 30 s; unknown input counts refuse; emoji, decomposed accents and Devanagari are refused rather than guessed; one Backspace per character otherwise |
 | `test_provenance.py` | 4 | The fingerprint changes when a replacement, the prompt or the language changes, and never contains their text; **a packaged build still has a code version** and a dev checkout is not mistaken for one |
 | `test_corrections_report.py` | 1 | A measured-but-excluded rewrite is reported as measured, not as "none measured" |
