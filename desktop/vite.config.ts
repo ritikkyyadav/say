@@ -46,28 +46,31 @@ function sayRuntimePlugin(): Plugin {
   };
 }
 
-export default defineConfig({
-  plugins: [react(), sayRuntimePlugin()],
-  clearScreen: false,
-  server: {
-    port: 1420,
-    strictPort: true,
-    host: 'localhost',
-  },
-  envPrefix: ['VITE_', 'TAURI_'],
-  define: (() => {
-    // Bake the runtime values into the bundle at Vite startup as a last-resort
-    // fallback for environments where the dev middleware isn't available
-    // (e.g. a production preview). The browser dev path prefers the
-    // `/__say/runtime` middleware above, which re-reads on every fetch.
-    const rt = readRuntime();
-    return {
+export default defineConfig(({ command }) => {
+  // Only the dev server may read runtime.json. A production build used to bake
+  // the running engine's bearer token into the shipped JavaScript, because
+  // this ran for `vite build` too: any build made while an engine was up
+  // carried a live credential inside the app. The packaged app gets its
+  // endpoint from the Tauri `get_engine_endpoint` command instead.
+  const rt = command === 'serve' ? readRuntime() : null;
+  return {
+    plugins: [react(), sayRuntimePlugin()],
+    clearScreen: false,
+    server: {
+      port: 1420,
+      strictPort: true,
+      host: 'localhost',
+    },
+    envPrefix: ['VITE_', 'TAURI_'],
+    define: {
+      // Last-resort fallback for the dev server when the `/__say/runtime`
+      // middleware is unavailable; that middleware re-reads on every fetch.
       'import.meta.env.VITE_DEV_ENGINE_PORT': JSON.stringify(rt ? String(rt.port) : ''),
       'import.meta.env.VITE_DEV_ENGINE_TOKEN': JSON.stringify(rt?.token ?? ''),
-    };
-  })(),
-  build: {
-    target: 'es2021',
-    sourcemap: false,
-  },
+    },
+    build: {
+      target: 'es2021',
+      sourcemap: false,
+    },
+  };
 });

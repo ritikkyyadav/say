@@ -35,9 +35,9 @@ SIGN_ID       := $(if $(SAY_SIGN_ID),$(SAY_SIGN_ID),Say Local Signing)
 export SAY_SIGN_ID := $(SIGN_ID)
 RUNTIME_JSON  := $(HOME)/Library/Application Support/Say/runtime.json
 
-.PHONY: all engine ui-build app embed-engine patch-plist dmg install clean dev dev-engine dev-shell engine-status engine-stop
+.PHONY: all engine ui-build check-bundle app embed-engine patch-plist dmg install clean dev dev-engine dev-shell engine-status engine-stop
 
-all: engine ui-build app embed-engine patch-plist
+all: engine ui-build app check-bundle embed-engine patch-plist
 
 # Boot the dev workflow:
 #   1. Make sure the Python engine is up in --no-menubar mode (no rumps icon
@@ -99,6 +99,19 @@ engine:
 
 ui-build:
 	npm run build
+	@$(MAKE) --no-print-directory check-bundle
+
+# The shipped JavaScript must never carry the engine's bearer token. vite.config.ts
+# only reads runtime.json for the dev server, but a build made while an engine is
+# running is exactly when a regression would leak a live one, so look for it.
+check-bundle:
+	@if [ -f "$(RUNTIME_JSON)" ]; then \
+		TOKEN=$$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("token") or "")' "$(RUNTIME_JSON)" 2>/dev/null); \
+		if [ -n "$$TOKEN" ] && grep -rqF -- "$$TOKEN" dist; then \
+			echo "[FAIL] dist/ contains the running engine's bearer token. Not shipping it."; exit 1; \
+		fi; \
+	fi
+	@echo "[OK] No engine token in dist/"
 
 app:
 	@echo "[+] Building desktop shell with Tauri..."
