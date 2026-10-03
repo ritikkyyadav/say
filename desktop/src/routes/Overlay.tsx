@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, OverlayConfigPatch } from '../lib/api';
 import { Reveal } from '../lib/motion';
 import { GlyphPreview } from '../components/GlyphPreview';
+import { DictationKeys, SnippetsCard } from '../components/Snippets';
 import { Pattern } from '../lib/glyphPattern';
 
 type Backdrop = 'light' | 'dark' | 'photo';
@@ -318,6 +319,14 @@ export function Overlay() {
             </div>
           </div>
         </Reveal>
+      </section>
+
+      {/* ── Keys and snippets ── */}
+      <section className="sec">
+        <DictationKeys />
+      </section>
+      <section className="sec">
+        <SnippetsCard />
       </section>
     </div>
   );

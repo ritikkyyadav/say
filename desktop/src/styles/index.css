@@ -536,6 +536,32 @@
 .torig{font-size:12px;line-height:1.55;color:var(--faint);max-width:94ch;margin-top:8px;display:none}
 .torig b{color:var(--muted);font-weight:500}
 .trow.open .torig{display:block}
+/* Snippets editor: trigger, text, remove — one row each. */
+.snip{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr) auto;gap:8px;align-items:start;margin-bottom:8px}
+.snip input,.snip textarea{
+  font:inherit;font-size:13px;color:var(--ink);background:var(--card-2);
+  border:1px solid var(--line);border-radius:8px;padding:7px 10px;min-width:0;
+}
+.snip textarea{min-height:36px;resize:vertical;line-height:1.5}
+.snip input:focus,.snip textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
+.ghost:disabled{opacity:.45;cursor:default}
+.ghost.solid{background:var(--ink);border-color:var(--ink);color:#fff}
+.ghost.solid:hover{background:var(--ink-2);color:#fff}
+/* Fixing a transcript in place. The editor replaces the text, so the row keeps
+   its shape and nothing else on the page moves. */
+.tfix{color:var(--accent-deep);font-weight:500}
+.tedit{
+  display:block;width:100%;max-width:94ch;min-height:74px;resize:vertical;
+  font:inherit;font-size:13.5px;line-height:1.62;color:var(--ink);
+  background:var(--card-2);border:1px solid var(--line);border-radius:8px;padding:9px 11px;
+}
+.tedit:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
+.tedit-bar{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
+.tedit-bar .hint{font-size:11.5px;color:var(--faint);margin-left:4px}
+.tedit-bar .err{font-size:11.5px;color:var(--accent-deep);margin-left:4px}
+.torig{font-size:12px;line-height:1.55;color:var(--faint);max-width:94ch;margin-top:8px;display:none}
+.torig b{color:var(--muted);font-weight:500}
+.trow.open .torig{display:block}
 .answer p b{font-weight:600;color:var(--ink)}
 
 .mcard{padding:20px 22px;display:grid;grid-template-columns:1fr 232px;gap:26px;align-items:center;margin-bottom:12px;position:relative}

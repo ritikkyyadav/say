@@ -55,6 +55,13 @@ export type Transcript = {
   review: { rank: number; differing_words: number } | null;
 };
 
+/** Say a trigger as the whole dictation and its text is typed instead. */
+export type SnippetsConfig = {
+  snippets: Record<string, string>;
+  min_trigger_words: number;
+  max_snippets: number;
+};
+
 /** One correction: what Say typed and what it became. */
 export type Correction = {
   id: number;
@@ -458,6 +465,10 @@ export const api = {
   // say "this one was right".
   correctTranscript: (id: number, text: string) =>
     sendJSON<Correction>('POST', `/transcripts/${id}/correction`, { text }),
+  snippets: () => getJSON<SnippetsConfig>('/snippets'),
+  // The whole set at once; the engine validates it before writing anything.
+  setSnippets: (snippets: Record<string, string>) =>
+    sendJSON<SnippetsConfig>('POST', '/snippets', { snippets }),
   clearTranscriptCorrection: (id: number) =>
     sendJSON<{ deleted: boolean }>('DELETE', `/transcripts/${id}/correction`),
 
