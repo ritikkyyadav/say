@@ -192,6 +192,29 @@ def clamp01(value: float) -> float:
     return float(value)
 
 
+# The failure shake: the mark slides side to side and settles, the way a macOS
+# password field says "no". Small enough to stay legible at 90 pt, three swings
+# so it cannot be mistaken for the spectrum moving.
+SHAKE_PT = 5.0
+SHAKE_S = 0.45
+SHAKE_CYCLES = 3.0
+
+
+def shake_offset(
+    t: float, *, amplitude: float = SHAKE_PT, duration: float = SHAKE_S,
+    cycles: float = SHAKE_CYCLES,
+) -> float:
+    """Horizontal offset in points, `t` seconds into a shake. 0 outside it.
+
+    A sine that decays linearly to rest, so it starts and ends exactly at the
+    mark's normal position — no jump on either side.
+    """
+    if t <= 0.0 or t >= duration:
+        return 0.0
+    envelope = 1.0 - t / duration
+    return amplitude * envelope * math.sin(2.0 * math.pi * cycles * t / duration)
+
+
 def _smoothstep(edge0: float, edge1: float, x: float) -> float:
     if edge1 <= edge0:
         return 1.0 if x >= edge1 else 0.0

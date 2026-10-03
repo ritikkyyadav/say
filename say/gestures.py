@@ -191,6 +191,11 @@ class GestureBridge:
             self.overlay_do('listen', event.mode or 'ptt')
         elif event.state == DictationState.PROCESSING:
             self.overlay_do('process')
+        elif event.state == DictationState.ERROR:
+            # The press failed. A plain dismiss looks exactly like success
+            # from the corner of an eye; the shake makes the person look at
+            # the notification that says why.
+            self.overlay_do('fail')
         else:
             self.overlay_do('dismiss')
 

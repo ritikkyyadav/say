@@ -361,3 +361,47 @@ def test_recovery_keeps_the_recording_flag(glyph):
 
     assert glyph._recording is True
     assert glyph._visible is True
+
+
+def test_a_failure_shakes_the_mark_then_retracts_it(glyph):
+    """An error used to dismiss the glyph exactly as success does."""
+    import time
+
+    from waveform import SHAKE_S
+
+    glyph._fail()
+    assert glyph._visible is True
+    assert glyph._shake_from is not None
+
+    start = glyph._shake_from
+    offsets = []
+    for k in range(1, 40):
+        glyph._shake_from = start
+        glyph._last_frame_at = time.perf_counter()
+        # Pretend `k` frames of the shake have elapsed.
+        glyph._shake_from = time.perf_counter() - SHAKE_S * k / 40
+        glyph._frame()
+        offsets.append(glyph._shake_dx)
+    assert any(dx > 0 for dx in offsets) and any(dx < 0 for dx in offsets)
+
+    glyph._shake_from = time.perf_counter() - (SHAKE_S + overlay_mod.FAIL_HOLD_S + 0.01)
+    glyph._frame()
+    assert glyph._shake_from is None
+    assert glyph._shake_dx == 0.0
+    assert glyph._reveal.target == 0.0  # retracting
+
+
+def test_a_new_press_interrupts_a_shake(glyph):
+    from waveform import BarMotion
+
+    glyph._fail()
+    assert glyph._shake_from is not None
+    glyph._show(BarMotion.LISTEN, True)
+    assert glyph._shake_from is None
+    assert glyph._shake_dx == 0.0
+
+
+def test_a_live_recording_is_never_shaken(glyph):
+    glyph._mark_recording(True)
+    glyph._fail()
+    assert glyph._shake_from is None

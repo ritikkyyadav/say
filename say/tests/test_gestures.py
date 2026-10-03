@@ -231,7 +231,7 @@ class StatusRoutingTests(unittest.TestCase):
 
         self.assertEqual(
             overlay.calls,
-            [('listen', 'hands_free'), ('process',), ('dismiss',), ('dismiss',), ('dismiss',)],
+            [('listen', 'hands_free'), ('process',), ('dismiss',), ('fail',), ('dismiss',)],
         )
 
     def test_recording_without_a_mode_listens_as_push_to_talk(self):

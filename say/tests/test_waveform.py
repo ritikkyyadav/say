@@ -492,3 +492,30 @@ class SilhouetteTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ShakeTests(unittest.TestCase):
+    """The failure shake starts and ends at rest, and reads as side to side."""
+
+    def test_it_starts_and_ends_exactly_at_rest(self):
+        from waveform import SHAKE_S, shake_offset
+
+        self.assertEqual(shake_offset(0.0), 0.0)
+        self.assertEqual(shake_offset(SHAKE_S), 0.0)
+        self.assertEqual(shake_offset(-1.0), 0.0)
+        self.assertEqual(shake_offset(SHAKE_S + 1.0), 0.0)
+
+    def test_it_swings_both_ways_and_never_past_its_amplitude(self):
+        from waveform import SHAKE_CYCLES, SHAKE_PT, SHAKE_S, shake_offset
+
+        samples = [shake_offset(SHAKE_S * k / 240) for k in range(241)]
+        self.assertLessEqual(max(abs(v) for v in samples), SHAKE_PT)
+        crossings = sum(1 for a, b in zip(samples, samples[1:]) if a * b < 0)
+        self.assertGreaterEqual(crossings, int(2 * SHAKE_CYCLES) - 1)
+
+    def test_it_settles(self):
+        from waveform import SHAKE_S, shake_offset
+
+        early = max(abs(shake_offset(SHAKE_S * k / 100)) for k in range(0, 30))
+        late = max(abs(shake_offset(SHAKE_S * k / 100)) for k in range(70, 100))
+        self.assertLess(late, early / 2)

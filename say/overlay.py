@@ -73,7 +73,15 @@ from Quartz import (
     CGPathMoveToPoint,
     CGSizeMake,
 )
-from waveform import BandAnalyzer, BarMotion, GlyphGeometry, Spring, silhouette
+from waveform import (
+    SHAKE_S,
+    BandAnalyzer,
+    BarMotion,
+    GlyphGeometry,
+    Spring,
+    shake_offset,
+    silhouette,
+)
 
 _log = get_logger('overlay')
 
@@ -108,6 +116,8 @@ HIDE_BELOW = 0.02
 # A display link ticks every ~16 ms while healthy, so a visible glyph that has
 # not been drawn for this long is not on any display, whatever its flags say.
 CLOCK_STALE_S = 1.0
+# How long the mark rests after a failure shake before it retracts.
+FAIL_HOLD_S = 0.15
 
 # ── Palette ─────────────────────────────────────────────────────
 # The ink follows the system appearance, but the system appearance is a poor
@@ -237,6 +247,10 @@ class DictationOverlay:
         self._recording = False
         self._motion_state = BarMotion.LISTEN
         self._last_frame_at = 0.0
+        # The failure shake (waveform.shake_offset): when it started, and the
+        # horizontal offset it puts on the silhouette this frame.
+        self._shake_from: float | None = None
+        self._shake_dx = 0.0
 
     # ── lifecycle ───────────────────────────────────────────────
 
@@ -265,6 +279,15 @@ class DictationOverlay:
     def release_arm(self) -> None:
         """Retract only if the gesture never became a recording."""
         self._on_main(self._hide_if_armed)
+
+    def fail(self) -> None:
+        """The press did not produce text. Shake once, then retract.
+
+        Before this an error simply dismissed the mark, which looks exactly
+        like success from the corner of an eye. The notification says what
+        went wrong; the shake makes sure the person looks.
+        """
+        self._on_main(self._fail)
 
     def set_theme(self) -> None:
         """Re-read `OVERLAY_THEME` and repaint. Cheap, and safe at any time."""
@@ -571,6 +594,10 @@ class DictationOverlay:
             self._recover_stale_clock('show')
         self._motion_state = motion_state
         if fresh:
+            # A new press interrupts a shake still settling from the last one.
+            self._shake_from = None
+            self._shake_dx = 0.0
+        if fresh:
             # A new gesture, whatever the last one did. Clearing this
             # unconditionally matters: re-arming while the previous dictation
             # is still fading out would otherwise leave the flag set, and a
@@ -644,6 +671,15 @@ class DictationOverlay:
     def _mark_recording(self, value: bool) -> None:
         self._recording = value
 
+    def _fail(self) -> None:
+        if not getattr(config, 'SHOW_OVERLAY', True) or self._recording:
+            # A new recording already owns the glyph; it is the better news.
+            return
+        self._show(BarMotion.LISTEN, not self._visible)
+        if self._panel is None or not self._visible:
+            return
+        self._shake_from = time.perf_counter()
+
     def _preview(self, seconds: float) -> None:
         if self._recording:
             return
@@ -687,6 +723,8 @@ class DictationOverlay:
     def _finish_hide(self) -> None:
         self._visible = False
         self._recording = False
+        self._shake_from = None
+        self._shake_dx = 0.0
         self._stop_clock()
         self._reveal.snap(0.0)
         self._motion.reset()
@@ -780,6 +818,13 @@ class DictationOverlay:
                 dt = 1.0 / 60.0
 
             reveal = self._reveal.tick(dt)
+            if self._shake_from is not None:
+                t = now - self._shake_from
+                self._shake_dx = shake_offset(t)
+                if t >= SHAKE_S + FAIL_HOLD_S:
+                    self._shake_from = None
+                    self._shake_dx = 0.0
+                    self._hide()
             if self._motion_state == BarMotion.WORK:
                 heights = self._motion.tick(dt, None, 0.0, BarMotion.WORK)
             else:
@@ -834,7 +879,7 @@ class DictationOverlay:
             return
         geometry = self._geometry
         origin = (
-            (self._window_w - geometry.width) / 2.0,
+            (self._window_w - geometry.width) / 2.0 + self._shake_dx,
             (self._window_h - geometry.height) / 2.0,
         )
         points = silhouette(heights, geometry, reveal=reveal, origin=origin, snap=self._snap)
