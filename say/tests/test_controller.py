@@ -521,6 +521,28 @@ class StreamingTranscriptionTests(unittest.TestCase):
         self.assertEqual(c._transcribe([0] * config.SAMPLE_RATE), '')
         self.assertFalse(transcriber.transcribed)
 
+    def test_a_partial_text_from_an_incomplete_session_is_redecoded(self):
+        recorder = FakeRecorder([0] * config.SAMPLE_RATE)
+        transcriber = FakeTranscriber()
+
+        class PartialSession:
+            segment_count = 1
+            complete = False
+            attempted = 1
+
+            def finish(self, tail):
+                return 'earlier segment'
+
+            def cancel(self):
+                pass
+
+        c = self._controller(recorder, transcriber)
+        c._session = PartialSession()
+        recorder.set_segment_callback = lambda _cb: None
+        recorder.pop_tail = lambda: [0.05] * (config.SAMPLE_RATE // 2)
+        self.assertEqual(c._transcribe([0.05] * config.SAMPLE_RATE), 'hello world')
+        self.assertTrue(transcriber.transcribed)
+
     def test_an_incomplete_empty_session_still_re_decodes(self):
         """A failed segment may have swallowed real words: re-decode."""
         recorder = FakeRecorder([0] * config.SAMPLE_RATE)

@@ -254,13 +254,23 @@ class ShortPieceTests(unittest.TestCase):
             self.prompts.append(prompt_override)
             return 'words'
 
-    def test_a_short_tail_gets_the_short_prompt_and_no_carry_over(self):
+    def test_a_decodable_short_tail_gets_the_short_prompt_and_no_carry_over(self):
         rec = self._Recorder()
         session = streaming.SegmentedSession(rec, base_prompt='SEED', short_prompt='TERMS')
         session.push(speech(9))
-        session.finish(speech(0.5))
+        session.finish(speech(1.5))
         self.assertEqual(rec.prompts[0], 'SEED')
         self.assertEqual(rec.prompts[1], 'TERMS')
+
+    def test_a_tail_below_the_decoder_minimum_marks_the_session_incomplete(self):
+        rec = self._Recorder()
+        session = streaming.SegmentedSession(rec, base_prompt='SEED', short_prompt='TERMS')
+        session.push(speech(9))
+        result = session.finish(speech(0.5))
+        self.assertEqual(result, 'words')
+        self.assertFalse(session.complete)
+        self.assertEqual(session.attempted, 1)
+        self.assertEqual(len(rec.prompts), 1)
 
     def test_a_long_tail_still_carries_the_previous_text(self):
         rec = self._Recorder()
@@ -272,7 +282,7 @@ class ShortPieceTests(unittest.TestCase):
     def test_the_short_prompt_defaults_to_the_base_prompt(self):
         rec = self._Recorder()
         session = streaming.SegmentedSession(rec, base_prompt='SEED')
-        session.finish(speech(0.5))
+        session.finish(speech(1.5))
         self.assertEqual(rec.prompts, ['SEED'])
 
     def test_the_threshold_matches_the_whole_clip_guard(self):

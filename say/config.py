@@ -111,10 +111,11 @@ AUTO_CORRECT = True                 # master switch for the whole stage
 AUTO_CAPITALISE = True              # sentence-start capitals, standalone "I"
 AUTO_TERMINAL_PUNCTUATION = True    # add a full stop when the last sentence lacks one
 
-# Vocabulary the acoustic model tends to mishear. Used twice: fed to the
-# decoder as bias *before* transcription, and used to repair near-misses
-# *after* it ("cloud code" -> "Claude Code"). Multi-word entries are much
-# safer to fuzzy-match than single words — prefer them.
+# Vocabulary the acoustic model tends to mishear. Whisper receives these as
+# decoder bias before transcription; every backend gets near-miss repair after
+# transcription ("cloud code" -> "Claude Code"). Moonshine's current runtime
+# has no decoder-prompt API. Multi-word entries are safer to fuzzy-match than
+# single words — prefer them.
 DICTIONARY: list[str] = []
 
 # Literal, whole-word substitutions applied before fuzzy matching. Use this

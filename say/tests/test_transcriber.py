@@ -33,13 +33,64 @@ class HallucinationFilterTests(unittest.TestCase):
         self.assertIn('merci', union)
 
     def test_punctuation_variants_normalize_into_filter(self):
-        # Whisper emits "Thank you." / "Thank you!" on silence — trailing
-        # punctuation must not let the hallucination slip past the filter.
         from transcriber import _build_active_filter, _normalize_for_filter
 
         en = _build_active_filter('en')
-        for variant in ('Thank you.', 'Thank you!', ' Thanks… ', 'Bye-bye.'):
+        for variant in ('Thanks for watching.', 'Thank you for watching!', 'Please subscribe.'):
             self.assertIn(_normalize_for_filter(variant), en)
+
+    def test_common_short_utterances_are_not_filtered(self):
+        from transcriber import _build_active_filter, _normalize_for_filter
+
+        en = _build_active_filter('en')
+        for phrase in ('You', 'Thank you.', 'Thanks!', 'Bye.', 'Goodbye', 'Okay.', 'I love you.'):
+            self.assertNotIn(_normalize_for_filter(phrase), en)
+
+    def test_common_short_utterances_survive_transcription(self):
+        import numpy as np
+
+        old_language = config.LANGUAGE
+        config.LANGUAGE = 'en'
+        try:
+            for phrase in ('Okay.', 'Thank you.', 'Bye.'):
+                t = transcriber.Transcriber('mlx-community/whisper-small-mlx')
+                t._loaded = True
+                t._backend = 'whisper-mlx'
+                t._transcribe_whisper = lambda _audio, prompt_override=None, result=phrase: result
+                audio = np.full(config.SAMPLE_RATE, 0.05, dtype=np.float32)
+                self.assertEqual(t.transcribe(audio), phrase)
+        finally:
+            config.LANGUAGE = old_language
+
+    def test_moonshine_output_uses_shared_dictionary_repair(self):
+        import numpy as np
+        import postprocess
+
+        old_terms = config.DICTIONARY
+        config.DICTIONARY = ['Claude Code']
+        try:
+            class Line:
+                text = 'cloud code'
+
+            class Result:
+                lines = [Line()]
+
+            class Moonshine:
+                def transcribe_without_streaming(self, audio_data, sample_rate=16000, flags=0):
+                    self.sample_count = len(audio_data)
+                    self.sample_rate = sample_rate
+                    return Result()
+
+            t = transcriber.Transcriber('moonshine/medium-streaming-en')
+            t._loaded = True
+            t._backend = 'moonshine'
+            t._ms = Moonshine()
+            audio = np.full(config.SAMPLE_RATE, 0.05, dtype=np.float32)
+            decoded = t.transcribe(audio, prompt_override='Claude Code')
+            self.assertEqual(decoded, 'cloud code')
+            self.assertEqual(postprocess.apply(decoded), 'Claude Code.')
+        finally:
+            config.DICTIONARY = old_terms
 
 
 class TranscriberApiTests(unittest.TestCase):

@@ -43,9 +43,6 @@ _HALLUCINATION_FILTER: dict[str, set[str]] = {
         '*music*',
     },
     'en': {
-        'you',
-        'thank you',
-        'thanks',
         'thanks for watching',
         'thank you for watching',
         'thanks for watching!',
@@ -55,17 +52,6 @@ _HALLUCINATION_FILTER: dict[str, set[str]] = {
         'subscribe to the channel',
         'please subscribe',
         'like and subscribe',
-        'bye',
-        'bye!',
-        'bye-bye',
-        'goodbye',
-        'see you',
-        'see you next time',
-        'see you later',
-        'okay',
-        'ok.',
-        'thank you so much',
-        'i love you',
     },
     'es': {
         'gracias',
@@ -419,10 +405,9 @@ class Transcriber:
         Returns an empty string if the audio is too short or the
         transcription matches a known hallucination phrase.
 
-        `prompt_override` replaces the decoder bias string for this call only.
-        Streaming mode uses it to hand each segment the tail of the previous
-        segment's text, rebuilding the cross-window conditioning that splitting
-        a clip into separate decoder calls would otherwise destroy.
+        `prompt_override` replaces the decoder bias string for this call only
+        on Whisper. Moonshine's current Python runtime has no prompt argument;
+        configured terms are repaired in the shared post-processing stage.
         """
         if not self._loaded:
             self.load()
@@ -436,6 +421,8 @@ class Transcriber:
             return ''
 
         if self._backend == 'moonshine':
+            # Moonshine's Python API has no prompt parameter. Its vocabulary
+            # repairs run later in the shared post-processing stage.
             text = self._transcribe_moonshine(audio)
         else:
             text = self._transcribe_whisper(audio, prompt_override=prompt_override)

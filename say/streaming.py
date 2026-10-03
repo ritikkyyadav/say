@@ -331,16 +331,23 @@ class SegmentedSession:
 
         tail_text = ''
         if tail is not None and len(tail):
-            with self._lock:
-                self.queued += 1
-            self._report()
-            try:
-                tail_text = self._transcribe(tail)
-            except Exception:
+            if _seconds(tail) < config.MIN_AUDIO_SECONDS:
                 self.complete = False
-                _log.exception('Tail transcription failed')
-            finally:
-                self._advance()
+                _log.warning(
+                    'Final streaming tail is shorter than the decoder minimum; '
+                    'the caller must decode the whole clip'
+                )
+            else:
+                with self._lock:
+                    self.queued += 1
+                self._report()
+                try:
+                    tail_text = self._transcribe(tail)
+                except Exception:
+                    self.complete = False
+                    _log.exception('Tail transcription failed')
+                finally:
+                    self._advance()
         with self._lock:
             parts = list(self._parts)
         if tail_text:
