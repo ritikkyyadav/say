@@ -111,6 +111,7 @@ def recommend(rows: list[dict[str, Any]], tolerance: float = 0.01) -> str:
 
 
 def main() -> int:
+    replay_bench.apply_user_settings()
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--models', default='', help='comma-separated (default: every installed model)')
     ap.add_argument('--languages', default='current',

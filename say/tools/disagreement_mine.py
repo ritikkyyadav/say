@@ -72,6 +72,7 @@ def _snippets(stored: str, other: str, limit: int = 3) -> list[tuple[str, str]]:
 
 
 def main() -> int:
+    replay_bench.apply_user_settings()
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--model', default='',
                     help='the second-opinion model (default: the best one already downloaded)')

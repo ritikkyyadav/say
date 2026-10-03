@@ -52,9 +52,16 @@ import settings  # noqa: E402
 import streaming  # noqa: E402
 from server.store import get_store  # noqa: E402
 
-# Honour the user's persisted overrides — otherwise the bench would sweep
-# against the shipped default rather than the model they actually dictate with.
-settings.apply_to_config()
+
+def apply_user_settings() -> None:
+    """Honour the user's persisted overrides — otherwise a bench sweeps against
+    the shipped default rather than the model they actually dictate with.
+
+    Called from each tool's `main()`, never at import: importing this module
+    from a test used to load the developer's real settings.json into the test
+    run, before the suite's isolation had redirected it.
+    """
+    settings.apply_to_config()
 
 # ── Decoder configurations under test ────────────────────────────────
 #
@@ -436,6 +443,7 @@ def print_table(results: dict[str, Score]) -> None:
 
 
 def main() -> int:
+    apply_user_settings()
     ap = argparse.ArgumentParser(description='Replay saved dictations under different decoder settings.')
     ap.add_argument('--configs', default=','.join(CONFIGS),
                     help='comma-separated config names (default: all)')

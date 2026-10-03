@@ -63,3 +63,19 @@ def test_no_real_user_path_is_reachable_by_default(isolated_user_data):
     )
     for real_path, current_path in zip(real, current, strict=True):
         assert os.path.realpath(current_path) != os.path.realpath(real_path)
+
+
+def test_importing_a_tool_does_not_load_the_users_settings():
+    """Regression: replay_bench applied settings.json at import, so a test that
+    imported a tool at collection time pulled the developer's real model and
+    overlay theme into the run and broke three unrelated tests."""
+    import importlib
+    from unittest.mock import patch
+
+    import settings
+
+    with patch.object(settings, 'apply_to_config') as applied:
+        for name in ('tools.replay_bench', 'tools.accuracy_bench', 'tools.disagreement_mine',
+                     'tools.corpus_audit', 'tools.scorecard'):
+            importlib.reload(importlib.import_module(name))
+    applied.assert_not_called()

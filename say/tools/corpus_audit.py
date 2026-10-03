@@ -28,8 +28,6 @@ import config  # noqa: E402
 import postprocess  # noqa: E402
 import settings  # noqa: E402
 
-settings.apply_to_config()
-
 DB_PATH = os.path.expanduser('~/Library/Application Support/Say/transcripts.db')
 
 
@@ -160,6 +158,7 @@ def print_terms_report(corpus: list[dict[str, Any]]) -> None:
 
 
 def main() -> int:
+    settings.apply_to_config()  # in main, never at import (see replay_bench)
     parser = argparse.ArgumentParser(description="Audit Say recordings and transcription quality.")
     parser.add_argument("--diffs", action="store_true", help="Print diffs of cleaned transcripts")
     parser.add_argument("--loops", action="store_true", help="Print detected repetition loops")
