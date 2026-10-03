@@ -25,6 +25,26 @@ _log = get_logger('controller')
 # while still catching one that never started.
 _MIN_LIVE_SECONDS = 0.15
 
+# Every key press ends in exactly one of these, written to the metrics ledger
+# as {"event": "press", "outcome": ...}. Without it "how often does pressing the
+# key give me text" was an impression; tools/scorecard.py turns it into the
+# reliability score. Only `delivered` is the press doing its job; `held`,
+# `silence`, `too_short` and the cancels are honest non-deliveries with a
+# reason, the `error:*` ones are failures.
+PRESS_OUTCOMES = frozenset({
+    'delivered', 'held', 'silence', 'nothing_to_insert', 'too_short',
+    'cancelled', 'cancelled_by_system', 'refused_busy', 'no_live_audio',
+    'error:mic_start', 'error:mic_stop', 'error:transcription',
+    'error:injection', 'error:audio_stream', 'error:device_changed',
+})
+
+
+def record_press(outcome: str, **fields: Any) -> None:
+    """Append one press outcome to the ledger. Never raises."""
+    if outcome not in PRESS_OUTCOMES:
+        _log.warning('Unknown press outcome %r recorded anyway', outcome)
+    get_ledger().record(event='press', outcome=outcome, **fields)
+
 
 class DictationState(str, Enum):
     IDLE = 'idle'
@@ -106,6 +126,10 @@ class DictationController:
         self._session: Any = None
         # Correction read-back watcher, built on first use (see readback.py).
         self._corrections: Any = None
+        # The press in flight, so exactly one outcome is recorded for it no
+        # matter how many exit paths it brushes past (see `_close_press`).
+        self._press_open = False
+        self._press_mode: str | None = None
 
         set_event = getattr(recorder, 'set_event_callback', None)
         if callable(set_event):
@@ -151,6 +175,9 @@ class DictationController:
                 if event_type == 'stream_error'
                 else 'Input device changed'
             )
+            self._close_press(
+                'error:audio_stream' if event_type == 'stream_error' else 'error:device_changed'
+            )
             self._emit(DictationState.ERROR, error_text, error=error_text)
             notify_error(error_text)
 
@@ -174,6 +201,15 @@ class DictationController:
             self.recorder.stop()
         except Exception:
             pass
+
+    def _close_press(self, outcome: str, **fields: Any) -> None:
+        """Record how the press in flight ended — once, whichever path gets here first."""
+        with self._lock:
+            if not self._press_open:
+                return
+            self._press_open = False
+            mode = self._press_mode
+        record_press(outcome, mode=mode, **fields)
 
     def _emit(
         self,
@@ -265,28 +301,38 @@ class DictationController:
         """
         _log.info('start_recording called (mode=%s, current_state=%s)', mode, self.state)
         error_for_notify: str | None = None
+        refused_in: str | None = None
         with self._lock:
             if not self._can_start_locked():
                 _log.info('start_recording rejected — already in %s', self.state)
-                return False
-            self._recording = True
-            self._recording_mode = mode
-            # Captured now, not after transcription: this is the document the
-            # user was looking at when they pressed the key.
-            self._target_app = get_frontmost_app()
-            try:
-                self._begin_streaming()
-                self.recorder.start()
-                _log.info('AudioRecorder.start() returned — mic stream open')
-            except Exception as exc:
-                self._recording = False
-                self._recording_mode = None
-                self._end_streaming(cancel=True)
-                error_for_notify = f'Microphone start failed: {exc}'
-                _log.exception('AudioRecorder.start() raised')
-                self._emit(DictationState.ERROR, error_for_notify, error=str(exc))
+                refused_in = self.state.value
+            else:
+                self._recording = True
+                self._recording_mode = mode
+                self._press_open = True
+                self._press_mode = mode
+                # Captured now, not after transcription: this is the document
+                # the user was looking at when they pressed the key.
+                self._target_app = get_frontmost_app()
+                try:
+                    self._begin_streaming()
+                    self.recorder.start()
+                    _log.info('AudioRecorder.start() returned — mic stream open')
+                except Exception as exc:
+                    self._recording = False
+                    self._recording_mode = None
+                    self._end_streaming(cancel=True)
+                    error_for_notify = f'Microphone start failed: {exc}'
+                    _log.exception('AudioRecorder.start() raised')
+                    self._emit(DictationState.ERROR, error_for_notify, error=str(exc))
+
+        if refused_in is not None:
+            # Recorded outside the lock: the ledger write is file I/O.
+            record_press('refused_busy', mode=mode, state=refused_in)
+            return False
 
         if error_for_notify is not None:
+            self._close_press('error:mic_start')
             notify_error(error_for_notify)
             return False
 
@@ -312,6 +358,7 @@ class DictationController:
             audio = self.recorder.stop()
         except Exception as exc:
             message = f'Microphone stop failed: {exc}'
+            self._close_press('error:mic_stop')
             self._emit(DictationState.ERROR, message, error=str(exc))
             notify_error(message)
             self._end_streaming(cancel=True)
@@ -323,6 +370,7 @@ class DictationController:
             # worker thread and the recorder's segment callback, so tear it down
             # explicitly rather than leaking one per discarded tap.
             self._end_streaming(cancel=True)
+            self._close_press('too_short', audio_seconds=round(duration, 3))
             self._emit(DictationState.READY, f'Ready — clip too short ({duration:.1f}s)')
             return True
 
@@ -348,6 +396,7 @@ class DictationController:
                 'refusing to transcribe',
                 duration, live_seconds,
             )
+            self._close_press('no_live_audio', audio_seconds=round(duration, 3))
             self._emit(DictationState.ERROR, message, error='no_live_audio')
             notify_error(message)
             return False
@@ -363,6 +412,7 @@ class DictationController:
             text = self._transcribe(audio)
         except Exception as exc:
             message = f'Transcription failed: {exc}'
+            self._close_press('error:transcription', audio_seconds=round(duration, 3))
             self._emit(DictationState.ERROR, message, error=str(exc))
             notify_error(message)
             self._end_streaming(cancel=True)
@@ -373,6 +423,10 @@ class DictationController:
         # they were still talking.
         inference_seconds = time.time() - t0
         if not text:
+            self._close_press(
+                'silence', audio_seconds=round(duration, 3),
+                wait_seconds=round(inference_seconds, 3),
+            )
             self._emit(
                 DictationState.READY,
                 f'Ready — no speech detected ({inference_seconds:.1f}s inference)',
@@ -396,6 +450,10 @@ class DictationController:
             pipeline = {}
         text = self._postprocess(text, target_app)
         if not text:
+            self._close_press(
+                'nothing_to_insert', audio_seconds=round(duration, 3),
+                wait_seconds=round(inference_seconds, 3),
+            )
             self._emit(DictationState.READY, 'Ready — nothing to insert')
             return True
 
@@ -457,6 +515,11 @@ class DictationController:
                 _log.exception('Failed to record injection outcome')
 
         if result.success:
+            self._close_press(
+                'delivered', audio_seconds=round(duration, 3),
+                wait_seconds=round(inference_seconds, 3), words=len(text.split()),
+                method=result.method, target_app=target_app,
+            )
             self._emit(
                 DictationState.READY,
                 f'Inserted via {result.method}: {transcript_preview}',
@@ -477,6 +540,11 @@ class DictationController:
         # clipboard too so recovering it is one ⌘V rather than a trip to the
         # Home tab.
         recovered = self._copy_to_clipboard(text)
+        self._close_press(
+            'error:injection', audio_seconds=round(duration, 3),
+            wait_seconds=round(inference_seconds, 3), method=result.method,
+            target_app=target_app, recovered_to_clipboard=recovered,
+        )
         detail = 'copied to clipboard' if recovered else 'saved to history'
         message = f'Injection failed ({result.error or "unknown error"}) — {detail}'
         self._emit(
@@ -510,6 +578,10 @@ class DictationController:
         injector — nothing broke, the user simply went somewhere else.
         """
         recovered = self._copy_to_clipboard(text)
+        self._close_press(
+            'held', audio_seconds=round(duration, 3),
+            wait_seconds=round(inference_seconds, 3), recovered_to_clipboard=recovered,
+        )
         if store is not None and transcript_id:
             try:
                 store.set_outcome(transcript_id, success=False, inject_method='held')
@@ -548,14 +620,20 @@ class DictationController:
             _log.exception('Could not copy the failed transcript to the clipboard')
             return False
 
-    def cancel_recording(self) -> bool:
-        """Cancel the current recording without transcribing."""
+    def cancel_recording(self, reason: str = 'user') -> bool:
+        """Cancel the current recording without transcribing.
+
+        `reason` is 'user' (Esc, another key) or 'system' (sleep, screen lock),
+        so the ledger can tell a person changing their mind from the machine
+        taking the recording away.
+        """
         with self._lock:
             if not self._recording:
                 return False
             self._recording = False
             self._recording_mode = None
 
+        self._close_press('cancelled_by_system' if reason == 'system' else 'cancelled')
         self._end_streaming(cancel=True)
         try:
             cancel = getattr(self.recorder, 'cancel', None)

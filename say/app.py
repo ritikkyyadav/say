@@ -184,7 +184,7 @@ class SayApp(rumps.App):
                 _log.info('Cancelling any active recording due to %s', name)
                 if self.listener is not None:
                     self.listener.force_idle()
-                self.controller.cancel_recording()
+                self.controller.cancel_recording(reason='system')
             else:
                 _log.info('System event: %s', name)
 
@@ -551,7 +551,7 @@ def _setup_sidecar_ui(controller, recorder, listener, overlay_slot=None) -> bool
                 _log.info('Cancelling any active recording due to %s', name)
                 if listener is not None:
                     listener.force_idle()
-                controller.cancel_recording()
+                controller.cancel_recording(reason='system')
 
         watcher = SystemEventWatcher(callback=on_system_event)
         watcher.start()

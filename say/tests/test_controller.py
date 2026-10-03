@@ -640,3 +640,149 @@ class LiveAudioGuardTests(unittest.TestCase):
         ctrl.start_recording()
         self.assertTrue(ctrl.stop_recording())
         self.assertTrue(transcriber.transcribed)
+
+
+class PressOutcomeTests(unittest.TestCase):
+    """Every key press ends in exactly one recorded outcome.
+
+    The reliability score is "presses that turned into text", and a score is
+    only as honest as its denominator: a path that records nothing silently
+    improves it, a path that records twice silently ruins it."""
+
+    def setUp(self):
+        import metrics
+
+        self._tmp = tempfile.TemporaryDirectory()
+        store_module.reset_store_for_tests(os.path.join(self._tmp.name, 't.db'))
+        self._ledger = metrics.get_ledger()._path
+        self._mark = os.path.getsize(self._ledger) if os.path.exists(self._ledger) else 0
+
+    def tearDown(self):
+        store_module.reset_store_for_tests(os.path.join(self._tmp.name, 't.db'))
+        self._tmp.cleanup()
+
+    def _presses(self):
+        import json
+
+        if not os.path.exists(self._ledger):
+            return []
+        with open(self._ledger, encoding='utf-8') as f:
+            f.seek(self._mark)
+            rows = [json.loads(line) for line in f if line.strip()]
+        return [r for r in rows if r.get('event') == 'press']
+
+    def _controller(self, recorder=None, transcriber=None, injector=None):
+        c = DictationController(
+            recorder=recorder or FakeRecorder([0.05] * config.SAMPLE_RATE * 2),
+            transcriber=transcriber or FakeTranscriber(),
+            injector=injector or (lambda text: InjectionResult(True, 'accessibility')),
+            status_callback=None,
+            logger=None,
+        )
+        c.load_model()
+        return c
+
+    def _press(self, c, how='stop'):
+        with patch('controller.get_frontmost_app', return_value='com.app.a'), \
+                patch('controller.notify_transcription_complete'), \
+                patch('controller.notify_error'), \
+                patch.object(DictationController, '_copy_to_clipboard', return_value=True):
+            c.start_recording()
+            if how == 'stop':
+                c.stop_recording()
+            elif how == 'cancel':
+                c.cancel_recording()
+            elif how == 'system':
+                c.cancel_recording(reason='system')
+
+    def _only(self):
+        presses = self._presses()
+        self.assertEqual(len(presses), 1, presses)
+        return presses[0]
+
+    def test_a_delivered_dictation(self):
+        self._press(self._controller())
+        p = self._only()
+        self.assertEqual(p['outcome'], 'delivered')
+        self.assertEqual(p['mode'], 'ptt')
+        self.assertEqual(p['words'], 2)
+        self.assertIn('wait_seconds', p)
+        self.assertNotIn('text', p)
+
+    def test_a_clip_too_short(self):
+        self._press(self._controller(recorder=FakeRecorder([0.05] * (config.SAMPLE_RATE // 4))))
+        self.assertEqual(self._only()['outcome'], 'too_short')
+
+    def test_silence(self):
+        self._press(self._controller(transcriber=FakeTranscriber(text='')))
+        self.assertEqual(self._only()['outcome'], 'silence')
+
+    def test_a_failed_decode(self):
+        class Broken(FakeTranscriber):
+            def transcribe(self, _audio):
+                raise RuntimeError('decoder died')
+
+        self._press(self._controller(transcriber=Broken()))
+        self.assertEqual(self._only()['outcome'], 'error:transcription')
+
+    def test_a_failed_injection(self):
+        self._press(self._controller(injector=lambda t: InjectionResult(False, 'cgevent', 'denied')))
+        p = self._only()
+        self.assertEqual(p['outcome'], 'error:injection')
+        self.assertTrue(p['recovered_to_clipboard'])
+
+    def test_focus_moving_holds_it(self):
+        c = self._controller()
+        with patch('controller.get_frontmost_app', side_effect=['com.app.a', 'com.app.b']), \
+                patch('controller.notify_error'), \
+                patch.object(DictationController, '_copy_to_clipboard', return_value=True):
+            c.start_recording()
+            c.stop_recording()
+        self.assertEqual(self._only()['outcome'], 'held')
+
+    def test_a_user_cancel_and_a_system_cancel_are_told_apart(self):
+        self._press(self._controller(), how='cancel')
+        self._press(self._controller(), how='system')
+        self.assertEqual([p['outcome'] for p in self._presses()],
+                         ['cancelled', 'cancelled_by_system'])
+
+    def test_a_press_while_busy_is_recorded_as_refused(self):
+        c = self._controller()
+        with patch('controller.get_frontmost_app', return_value='com.app.a'):
+            c.start_recording()
+            self.assertFalse(c.start_recording())  # already recording
+        p = self._only()
+        self.assertEqual(p['outcome'], 'refused_busy')
+        self.assertEqual(p['state'], 'recording')
+
+    def test_a_microphone_that_will_not_start(self):
+        class Dead(FakeRecorder):
+            def start(self):
+                raise OSError('device busy')
+
+        self._press(self._controller(recorder=Dead([0.0])), how='none')
+        self.assertEqual(self._only()['outcome'], 'error:mic_start')
+
+    def test_a_clip_the_microphone_never_delivered(self):
+        class PreRollOnly(FakeRecorder):
+            live_seconds = 0.0
+
+        self._press(self._controller(recorder=PreRollOnly([0.05] * config.SAMPLE_RATE * 2)))
+        self.assertEqual(self._only()['outcome'], 'no_live_audio')
+
+    def test_a_stream_error_mid_recording(self):
+        c = self._controller()
+        with patch('controller.get_frontmost_app', return_value='com.app.a'), \
+                patch('controller.notify_error'):
+            c.start_recording()
+            c._on_audio_event('stream_error', 'gone')
+            c.stop_recording()  # nothing left to stop: must not record again
+        self.assertEqual(self._only()['outcome'], 'error:audio_stream')
+
+    def test_every_recorded_outcome_is_a_known_one(self):
+        from controller import PRESS_OUTCOMES
+
+        for how in ('stop', 'cancel', 'system'):
+            self._press(self._controller(), how=how)
+        for p in self._presses():
+            self.assertIn(p['outcome'], PRESS_OUTCOMES)
