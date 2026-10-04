@@ -126,11 +126,11 @@ def accuracy(review: Mapping[str, Any]) -> Category:
 CONVENIENCE: tuple[tuple[str, int, str], ...] = (
     ('Hold or toggle with one key', 3, 'shipped'),
     ('Fix a transcript in the app', 2, 'shipped'),
-    ('Re-insert the last dictation', 2, 'planned'),
-    ('Undo the last dictation', 2, 'planned'),
-    ('Every failure explained', 2, 'planned'),
+    ('Re-insert the last dictation', 2, 'shipped'),     # Fn+V, installed 2026-10-04
+    ('Undo the last dictation', 2, 'shipped'),          # Fn+Z, installed 2026-10-04
+    ('Every failure explained', 2, 'shipped'),          # glyph shake + notification
     ('Approve learned vocabulary', 2, 'planned'),
-    ('Snippets', 2, 'planned'),
+    ('Snippets', 2, 'planned'),                         # built, not yet installed
     ('Voice editing of selected text', 4, 'planned'),
     ('Two-minute onboarding', 1, 'planned'),
 )
