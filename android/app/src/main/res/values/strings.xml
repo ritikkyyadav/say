@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Say</string>
+    <string name="ime_subtype_label">Say voice input</string>
+
+    <!-- Home -->
+    <string name="home_tagline">Tap the mic key on your keyboard, speak, tap done. Words appear where you were typing. Nothing leaves the phone.</string>
+    <string name="setup_title">Set up Say</string>
+    <string name="setup_enable">Turn Say on in keyboard settings</string>
+    <string name="setup_enable_action">Open keyboard settings</string>
+    <string name="setup_mic">Let Say use the microphone</string>
+    <string name="setup_mic_action">Allow microphone</string>
+    <string name="setup_pick">Pick Say from your keyboard\'s mic key, or from the keyboard switcher</string>
+    <string name="setup_pick_action">Choose keyboard</string>
+    <string name="setup_done">Done</string>
+    <string name="try_hint">Try it here</string>
+    <string name="dictate">Dictate</string>
+    <string name="dictate_stop">Done</string>
+    <string name="switch_keyboard">Switch keyboard</string>
+    <string name="status_loading">Loading the model…</string>
+    <string name="status_downloading">Getting the speech model, once… %1$d%%</string>
+    <string name="status_ready">Ready · %1$s</string>
+    <string name="status_error">Engine error: %1$s</string>
+    <string name="status_recording">Listening — tap Done when you have finished</string>
+    <string name="status_processing">Transcribing…</string>
+    <string name="status_nothing_heard">Nothing heard. Try again, a little closer to the phone.</string>
+    <string name="status_held">The field went away, so the text is on your clipboard.</string>
+    <string name="how_title">How to use Say</string>
+    <string name="how_enable">Turn Say on in keyboard settings</string>
+    <string name="how_mic">Allow the microphone</string>
+    <string name="how_pick">In any app, open the keyboard switcher — the globe key on Gboard, or the keyboard icon at the bottom of the screen — and pick Say. Speak, tap the mark, and your keyboard comes back on its own.</string>
+    <string name="how_pick_action">Choose keyboard</string>
+    <string name="how_done">Done</string>
+    <string name="mic_request_hint">Say needs the microphone to hear you.</string>
+
+    <!-- Say anywhere: the floating glyph -->
+    <string name="a11y_summary">Puts a floating Say mark over your apps; tap it to dictate into the field you are in.</string>
+    <string name="a11y_description">Say uses this to place the words you dictate at the cursor of the text field that has focus, and to show its floating mark while a keyboard is up. It reads nothing else on screen, stores nothing it sees, and never sends anything off the phone.</string>
+    <string name="bubble_title">Say anywhere</string>
+    <string name="bubble_blurb">A floating mark over every app, above the keyboard. Tap it, speak, tap again: the words land at your cursor, whichever keyboard you use. Hold it to cancel; drag it to move it.</string>
+    <string name="bubble_on">On — the mark appears when a keyboard is up</string>
+    <string name="bubble_off">Off. Turn on “Say” under Accessibility to enable it.</string>
+    <string name="bubble_action">Open Accessibility settings</string>
+    <string name="bubble_privacy">It needs the Accessibility permission, which is the only way an app can type into another app on Android. Say uses it for exactly that and for nothing else.</string>
+    <string name="build_stamp">Say %1$s · everything on this phone</string>
+    <string name="bubble_no_password">Say won’t dictate into a password field.</string>
+    <string name="bubble_held">No text field here — the words are on your clipboard.</string>
+    <string name="kpi_words">words</string>
+    <string name="kpi_wpm">words / min</string>
+    <string name="kpi_streak">day streak</string>
+    <string name="transcripts_title">Transcripts</string>
+    <string name="transcripts_empty">Nothing yet. Your dictations will appear here.</string>
+    <string name="copied">Copied</string>
+    <string name="models_title">Models</string>
+    <string name="models_blurb">Bigger models hear more. They download once from moonshine.ai and then work offline.</string>
+    <string name="model_in_use">In use</string>
+    <string name="model_installed">Installed</string>
+    <string name="model_bundled">Built in</string>
+    <string name="model_not_installed">Not installed</string>
+    <string name="model_use">Use</string>
+    <string name="model_download">Download %1$s</string>
+    <string name="model_cancel">Cancel</string>
+    <string name="model_remove">Remove</string>
+    <string name="model_downloading">Downloading… %1$d%%</string>
+    <string name="model_error">Download failed: %1$s</string>
+    <string name="model_no_space">Not enough free space for this model.</string>
+    <string name="settings_title">Settings</string>
+    <string name="setting_auto_correct">Clean up transcripts</string>
+    <string name="setting_auto_correct_blurb">Capitals, full stops, collapsed decoder loops. Rules only, no model.</string>
+    <string name="setting_capitalise">Capitalise sentences</string>
+    <string name="setting_terminal_punctuation">End sentences with a full stop</string>
+    <string name="setting_return_to_keyboard">Return to my keyboard after dictating</string>
+    <string name="setting_return_to_keyboard_blurb">Off keeps Say up so you can dictate again with one tap.</string>
+    <string name="setting_dictionary">Vocabulary</string>
+    <string name="setting_dictionary_blurb">Names and jargon, one per line. Say biases the decoder toward them and repairs near-misses afterwards.</string>
+    <string name="setting_dictionary_hint">Claude Code\nKubernetes</string>
+    <string name="setting_replacements">Replacements</string>
+    <string name="setting_replacements_blurb">Always swap a phrase, one per line, as heard = wanted.</string>
+    <string name="setting_replacements_hint">code base = codebase</string>
+
+    <!-- IME panel -->
+    <string name="panel_listening">Listening</string>
+    <string name="panel_loading">Loading the model…</string>
+    <string name="panel_processing">Transcribing…</string>
+    <string name="panel_ready">Tap the mark to dictate</string>
+    <string name="panel_error">Something went wrong</string>
+    <string name="panel_no_mic">Say needs the microphone</string>
+    <string name="panel_allow">Allow</string>
+    <string name="panel_nothing_heard">Didn\'t catch that</string>
+    <string name="panel_held">Field went away — copied to clipboard</string>
+    <string name="panel_done">Done</string>
+    <string name="panel_cancel">Cancel</string>
+    <string name="panel_keyboard">Back to keyboard</string>
+    <string name="panel_progress">Transcribing… %1$d of %2$d</string>
+</resources>

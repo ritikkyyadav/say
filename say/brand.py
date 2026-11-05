@@ -92,6 +92,14 @@ PINK_500 = (0.961, 0.714, 0.737)  # #F5B6BC  cheeks
 PINK_600 = (0.937, 0.557, 0.604)  # #EF8E9A
 PINK_700 = (0.831, 0.345, 0.412)  # #D45869
 
+# ── The mark ─────────────────────────────────────────────────────
+# The logo's own colour, and the source of truth for anything that draws
+# the mark at runtime. The one surface it is deliberately absent from is
+# the menu bar: that glyph ships as a *template* image so macOS can tint
+# it to match the bar, and a coloured template would have to give that up.
+# `gen_logo.MARK` is the same colour on the asset side.
+MARK = (0.737, 0.173, 0.380)   # #BC2C61  raspberry — the Say mark
+
 # ── Status (must read on both a light and a dark menu bar, so these
 #    are all mid-tone: full-strength ink or white would fail on one) ──
 CRAIL  = (0.851, 0.467, 0.341)  # #D97757  recording

@@ -402,7 +402,7 @@ class _MarkPlaceholder(NSView):
         # Bottom-heavy silhouette, so nudge it up off true centre.
         baseline = (h - mark_h) / 2.0 + mark_h * self.OPTICAL_LIFT
 
-        brand.color(brand.INK).setFill()
+        brand.color(brand.MARK).setFill()
         path = NSBezierPath.bezierPath()
         x = left
         for col_w, level in self.COLUMNS:

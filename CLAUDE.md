@@ -64,6 +64,14 @@ mypy say/                                        # py311, ignore_missing_imports
 cd say && make all                               # PyInstaller + bundled model → Say.app
 cd desktop && make all                           # engine + UI + Tauri → embedded desktop app
 cd desktop && make dmg                           # → Say_0.1.0_aarch64.dmg (unsigned)
+
+# ── Android (android/) — needs JAVA_HOME=/opt/homebrew/opt/openjdk@17, ANDROID_HOME=~/Library/Android/sdk ──
+cd android && make models                        # 51 MB bundled model → app/src/main/assets (gitignored)
+cd android && make test                          # 124 JVM tests: the ported engine modules
+cd android && make build                         # debug APK; make signing-key && make release → dist/Say.apk (61 MiB, model inside)
+cd android && make release-small                 # dist/Say-nomodel.apk (29 MiB) — model fetched on first launch
+cd android && make avd && make emulator          # Android 16 arm64 AVD, headless; then make install
+cd android && make replay CLIP=~/Library/Application\ Support/Say/recordings/399.wav   # a stored dictation through the phone pipeline
 ```
 
 ---
@@ -100,6 +108,8 @@ cd desktop && make dmg                           # → Say_0.1.0_aarch64.dmg (un
 
 **Two modes:** Dev: `python say/app.py --server` (menu bar + API). Production: Tauri spawns `SayEngine.app --no-menubar --owner-pid <shell pid>` as sidecar. Quitting kills it from the shell (`shutdown_engine()`), **and** the engine exits on its own when the owner pid disappears — which is the only thing that covers Force Quit. See `owner_watch.py`.
 
+**Android is a third surface with the same engine rules** (`android/`, Kotlin): Say is an *input method*. The user's keyboard mic key (or the switcher) brings up a panel holding the glyph; listening starts at once; tapping the mark stops it; the text is committed into the field via `InputConnection.commitText()` and the previous keyboard comes back. One process holds the engine, the keyboard service and the Home screen — no loopback HTTP. Speech-to-text is the same Moonshine runtime as the Mac, as the official `ai.moonshine:moonshine-voice` AAR (0.1.5, MIT); `tiny-streaming-en` (51 MB) is bundled, Small/Medium download. See the Android file map below.
+
 **State machine** (`controller.py` `DictationState` enum): `IDLE` → `LOADING` (model load) → `READY` (waiting for hotkey) → `RECORDING` (mic active) → `PROCESSING` (transcribing) → back to `READY`. Any stage can → `ERROR`.
 
 **Hotkey priority**: Fn key via CGEventTap (preferred) → ctrl+space via pynput (fallback). `listener_factory.py` handles auto-fallback, and `ListenerUpgrader` swaps back up to Fn the moment Accessibility is granted — no restart. Fn override neutralizes macOS globe-key action via `AppleFnUsageType=0` in NSGlobalDomain.
@@ -128,6 +138,8 @@ cd desktop && make dmg                           # → Say_0.1.0_aarch64.dmg (un
 | `corrections.py` | **The scorecard for everything between the mic and the document.** Pure word-level diff (no AppKit, no I/O) that answers "did the user still have to fix it". Two guards carry the whole metric: trailing **continuation is not correction** (`_split_boundary_growth` peels the user's next keystrokes out of the boundary block they fuse into), and a change past `MAX_DRIFT` is a **rewrite, not a correction**. `term_pairs()` extracts misheard-term pairs on demand — deliberately not stored, so better extraction rules can be applied retroactively. `_unfuse_continuation()` splits a token typed flush against our closing full stop ("Unreal.Unreal") so a second dictation landing against the first is continuation, not a correction. `word_errors()` is the count for a *deliberate* reference (an in-app fix, a labelled clip): no continuation rules, so trailing additions are words we missed. | `diff() → Diff`, `looks_like_correction()`, `term_pairs()`, `summarise(rows, insertions=) → RateSummary`, `tokenize()`, `normalise()`, `Edit`, `MAX_DRIFT`, `word_errors(reference, hypothesis) → (errors, ref_words)` |
 | `readback.py` | **Observes the correction.** A few seconds after injection, re-reads the focused element via the Accessibility API and diffs it against Say's span. Rides the grant injection already needs — nothing extra is requested — and fails closed and silent without it. Privacy contract is structural: only the element Say just wrote into, only inside a window it opened, document context held **in memory only** to relocate the span and dropped on fire, and only Say's own span + what it became is ever persisted. `delay_s<=0` reads back inline (test determinism). Every insertion now ends in exactly one classified outcome via `store.finish_observation()` — `clean`, `corrected`, `continuation`, `formatting_only`, `rewrite`, `deleted`, `unreadable`, `unlocatable`, `ambiguous`, `disabled`, `dropped`, `unarmed` — and `_locate()` refuses a repeated anchor pair instead of taking the first. | `CorrectionWatcher(store, delay_s=)` — `.observe()`, `.shutdown()`; `_relocate()`, `DEFAULT_DELAY_S`, `_locate() → (status, region)` |
 | `suggestions.py` | **Corrections → vocabulary rules the user can approve.** Finds each substitution the user has made, widens a one-word pair with a neighbour both sides agree on (`cloud` → `cloud code`), and describes it: confirmations, distinct days, conflicting corrections, how often it would fire across *every* stored transcript, and how many of those the user checked and left alone. Never applies anything — `should_suggest()` decides what is shown and a person says yes. Pure. **Not wired to the API yet.** | `collect(correction_rows, transcripts) → [PairStats]`, `suggest(rows, transcripts, existing=)`, `should_suggest(stats)`, `pairs_in(inserted, corrected)`, `PairStats`, `MAX_EXAMPLES` |
+| `snippets.py` | **Say a short phrase, type a longer text you saved.** Fires only when the trigger is the whole utterance (case and Whisper's punctuation ignored), needs two words or more, and is typed verbatim past post-processing. `check()` validates a whole set for the API. Pure. | `match(spoken, snippets)`, `check(snippets)`, `normalise()`, `BadSnippet`, `MIN_TRIGGER_WORDS` |
+| `recall.py` | **Getting the last dictation back, and taking it back out.** Fn+V re-inserts the newest transcript (held or failed ones included, the user's own fix preferred); Fn+Z deletes what Say just typed with one Backspace per character — only with the same app frontmost, no key press or click since (the Fn tap counts them, never which), inside `UNDO_WINDOW_S`, and every character one Backspace wide. Any doubt refuses with the reason. Pure. | `Delivery`, `undo_refusal(last, now=, frontmost=, keystrokes=)`, `backspaces_for(text)`, `UNDO_WINDOW_S` |
 | `review_queue.py` | **Which transcripts are worth checking by ear.** Ranks clips by how many words differ between the stored text and a second model's decode of the same audio (`tools/disagreement_mine.py` does the decoding). Disagreement is where to look, never counted as error until a person has checked. The file beside the database holds ids and counts only — no text. Pure apart from `save`/`load`. | `rank(clips, min_words=, limit=)`, `disagreement(stored, other)`, `save(store, entries)`, `load(store) → {id: entry}`, `queue_path(store)`, `MIN_WORDS`, `MAX_ENTRIES` |
 | `provenance.py` | **What produced this transcript.** `snapshot()` fingerprints the effective settings + code for each new dictation: a hash of the knobs (never their values — no prompt or dictionary text is stored), the backend, and a code version (source hash in dev; executable size+mtime in a packaged build, which has no `.py` to hash). Stored beside `raw_asr`, the decoder output before post-processing, so an error can be attributed to the model or to a rule. | `snapshot() → {pipeline_hash, pipeline_version, model_backend, language}` |
 | `recordings.py` | **Audio receipts** (opt-in, `SAVE_RECORDINGS`). Writes per-dictation 16kHz mono WAV to `…/Say/recordings/<id>.wav`, links it via `store.set_audio_path`. Retention sweep (keep_all/days/size), local ZIP export (clips + CSV/JSON manifest) to `…/Say/exports/`. Store-parameterized (not singleton) so the API can inject a test store. Local only — never uploaded. | `save_for_transcript()`, `read_bytes()`, `delete_recording()`, `delete_all()`, `total_bytes()`, `enforce_retention()`, `recordings_config()`, `apply_recordings_config()`, `list_recordings()`, `export_zip()` |
@@ -138,8 +150,6 @@ cd desktop && make dmg                           # → Say_0.1.0_aarch64.dmg (un
 | `text_inject_clipboard.py` | NSPasteboard + Cmd+V fallback. Snapshots **every item and type** on the pasteboard and restores them all (string-only fallback). 30ms pre-paste, 200ms post-paste settle. | `inject_text_clipboard(text) → InjectResult`, `snapshot_pasteboard(pb)`, `restore_pasteboard(pb, snapshot, AppKit)` |
 | `hotkey.py` | pynput-based global hotkey listener. Tap-to-toggle: hold <0.30s → hands-free, hold ≥0.30s → PTT, Esc cancels. | `HotkeyListener` — `.start(timeout)`, `.stop()`, `.force_idle()`, `.mode`, `parse_hotkey(str)` |
 | `hotkey_fn.py` | CGEventTap Fn-key listener. **Any key other than Space/Esc while Fn is held cancels the gesture** (Fn+arrows are Home/End/PageUp/Down — they used to start phantom recordings that could inject ambient speech). Fires `on_arm`/`on_disarm` so the recorder can pre-fill pre-roll. Fn hold → PTT; **tap Space anytime while Fn held** (PENDING *or* already in PTT) → latches hands-free (release Fn, talk, press Fn to stop) — not a sub-250ms chord; Esc cancels. Swallows Fn/Space/Esc events. **Fn+V / Fn+Z** are chords (macOS assigns neither) that fire on Fn *release* — an event posted while Fn is held inherits it, and Fn+Delete is forward delete. Counts key presses that reach an app and mouse clicks (`user_inputs`), never which. | `FnHotkeyListener` — `.start(timeout)`, `.stop()`, `.force_idle()`, `.mode`; `apply_low_latency_switch_interval()`, `.user_inputs` |
-| `snippets.py` | **Say a short phrase, type a longer text you saved.** Fires only when the trigger is the whole utterance (case and Whisper's punctuation ignored), needs two words or more, and is typed verbatim past post-processing. `check()` validates a whole set for the API. Pure. | `match(spoken, snippets)`, `check(snippets)`, `normalise()`, `BadSnippet`, `MIN_TRIGGER_WORDS` |
-| `recall.py` | **Getting the last dictation back, and taking it back out.** Fn+V re-inserts the newest transcript (held or failed ones included, the user's own fix preferred); Fn+Z deletes what Say just typed with one Backspace per character — only with the same app frontmost, no key press or click since (the Fn tap counts them, never which), inside `UNDO_WINDOW_S`, and every character one Backspace wide. Any doubt refuses with the reason. Pure. | `Delivery`, `undo_refusal(last, now=, frontmost=, keystrokes=)`, `backspaces_for(text)`, `UNDO_WINDOW_S` |
 | `listener_factory.py` | Auto-selects best hotkey listener (Fn first, pynput fallback) and watches for a late Accessibility grant to upgrade in place. | `make_listener(...) → ListenerInfo(listener, kind, label, fell_back)`, `try_start_fn_listener(...) → (info, error)`, `ListenerUpgrader(start_fn, on_upgraded)` |
 | `fn_override.py` | Temporarily sets AppleFnUsageType=0 to suppress macOS globe-key action. Crash-safe: persists backup to disk before mutation. | `acquire()`, `release()` |
 | `config.py` | **Single source of truth** for shipped defaults. No hardcoded values elsewhere. | Constants: `MODEL`, `HOTKEY`, `SAMPLE_RATE`, `MAX_RECORDING_SECONDS`, `PRE_ROLL_SECONDS`, `INJECT_METHOD`, `LANGUAGE`, etc. |
@@ -198,6 +208,36 @@ cd desktop && make dmg                           # → Say_0.1.0_aarch64.dmg (un
 | `main.rs` | Window lifecycle. Spawns engine sidecar on setup (terminating any orphan first — **never adopting one**, which is what made the leak permanent), always tears the engine down on ExitRequested via `shutdown_engine()`. Cmd+W hides window (doesn't close). Commands: `get_engine_endpoint`, `open_privacy_settings`, `reveal_logs_dir`, `reveal_path` (reveal+select a file in Finder, used after a recordings ZIP export). | `EngineEndpoint { host, port, token }` |
 | `sidecar.rs` | Engine process manager. Launches `SayEngine.app` via **LaunchServices** (`open -n … --args --no-menubar`), NOT by exec'ing the inner binary — a directly-exec'd child inherits the shell's TCC identity so the engine's own Accessibility/Input-Monitoring grants never apply (Fn stays disabled). `open` detaches, so `.kill()` SIGTERMs the engine pid from `runtime.json` (3s wait → SIGKILL). `SAY_ENGINE_BIN` dev override still direct-execs. Passes `--owner-pid` so the engine can outlive-check the shell (Force Quit runs no shell code at all). `engine_status()` classifies the engine in `runtime.json` as `Ours`/`Orphan`/`Foreign`, so a leftover is terminated at launch while a dev's hand-started engine is left alone; `shutdown_engine()` is keyed on the file, not on a handle we hold. | `Sidecar` — `::spawn()`, `.kill()`; `EngineStatus`, `engine_status()`, `terminate_engine(pid)`, `shutdown_engine()`, `read_runtime_info()` |
 
+## File Map — Android (`android/app/src/main/java/com/ritikyadav/say/`)
+
+| File | Purpose | Key Exports |
+|------|---------|-------------|
+| `SayApp.kt` | Application: the process-wide singletons (settings, store, models, transcriber, engine). | `SayApp.of(context)` |
+| `Settings.kt` | User overrides in SharedPreferences, read at call time (the `settings.py` role). Dictionary/replacements parsed from the text the user typed. | `Settings` — `.postprocessOptions()`, `.model`, `.returnToKeyboard`, `parseDictionary()`, `parseReplacements()` |
+| `engine/Config.kt` | Shipped defaults (`config.py`). | `SAMPLE_RATE`, `BLOCK_SAMPLES`, `MIN_LIVE_SECONDS`, `MODEL`, … |
+| `engine/Postprocess.kt` | **Line-for-line port of `postprocess.py`** (loop collapse → replacements → fuzzy terms → whitespace → capitals → full stop) plus `SequenceMatcher`, a port of difflib's ratio so the tuned fuzzy thresholds mean the same thing. Options travel explicitly instead of via a module global. | `Postprocess.apply(text, options)`, `Options`, `keyterms()`, `collapseRepetitions()`, `soundex()`, `runThreshold()` |
+| `engine/Streaming.kt` | Port of `streaming.py` minus the Whisper prompt plumbing (Moonshine takes key terms, not a text prompt). | `Streaming.splitOnSilence()`, `SilenceSegmenter`, `SegmentedSession` (`.push()`, `.finish(tail)`, `.complete`, `.attempted`, `.progress`), `SegmentTranscriber` |
+| `engine/Hallucinations.kt` | The silence-hallucination filter, punctuation-insensitive like the Mac's. | `isHallucination()`, `normalise()` |
+| `engine/Recorder.kt` | `AudioRecord` (VOICE_RECOGNITION, 16 kHz mono) on its own thread, 64 ms blocks to the monitor (glyph), the segmenter and the clip. `AudioSource` is the seam the debug replay uses. | `Recorder` — `.start()`, `.stop() → Capture(tail, full, liveSeconds)`, `.monitor`, `.segmentCallback`, `.onSourceEnded`; `MicSource`, `Recorder.debugSourceFactory` |
+| `engine/MoonshineTranscriber.kt` | Wraps `ai.moonshine.voice.Transcriber`: `loadFromFiles`, batch `transcribeWithoutStreaming` per segment (as the Mac does), hallucination filter, RTF warning, **`setKeyterms()` — the dictionary biases the decoder here**, which the Mac's 0.0.62 pin cannot do with Moonshine. | `MoonshineTranscriber` — `.load(id, dir, arch)`, `.transcribe()`, `.setKeyterms()`, `.close()`, `isStreamingArch()` |
+| `engine/ModelManager.kt` (see also) | `ensureAvailable(info)` is the one route to a usable model — installed, or copied out of the APK, or downloaded now with throttled progress. `-PsayBundleModel=false` builds an APK with no model at all and this is what fetches it on first launch. | `.ensureAvailable()`, `.isInAssets()`, `PROGRESS_INTERVAL_MS` |
+| `engine/ModelCatalog.kt` | Source of truth for the three models (tiny bundled, small recommended, medium = the Mac default). Component files only; the word-timestamp decoder is deliberately excluded (it doubles every download). | `ModelCatalog.CATALOG`, `get()`, `bundled()`, `ModelInfo` |
+| `engine/ModelManager.kt` | Copy-from-assets on first launch (streamed, never the model in the Java heap), resumable component downloads with real-byte progress, disk pre-check, cancel-cleans-partials, delete guarded to the model root. **A model counts as installed only with the `.complete` marker**, written last. | `ModelManager` — `.ensureBundled()`, `.isInstalled()`, `.startDownload()`, `.cancelDownload()`, `.delete()`, `Download` |
+| `engine/DictationController.kt` | The state machine (`controller.py`): persists BEFORE the sink commits, refuses a clip the mic did not contribute to, re-decodes an incomplete streamed result whole, holds to the clipboard when focus moved. Owns the `BandAnalyzer` the glyph reads. | `DictationController` — `.ensureModelLoaded()`, `.canStartRecording()`, `.startRecording(target)`, `.stopRecording()`, `.cancelRecording()`, `.hold()`, `.sink`, `.analyzer`; `focusPolicy()`, `Target`, `Result` |
+| `engine/EndOfSpeech.kt` | When a dictation ends on its own — the one rule the phone needs that the Mac's key release answers physically. Consulted every block while recording. | `EndOfSpeech.shouldFinish(trailingSilenceS, spokeYet, totalS)` |
+| `glyph/Waveform.kt` | **Port of `waveform.py`, constants unchanged**, plus a small radix-2 FFT and `MARK_PROFILE` / `BarMotion.State.MARK` (the logo, held, uncoupled) for the resting bubble. | `BandAnalyzer`, `BarMotion`, `Spring`, `GlyphGeometry`, `silhouette()`, `Waveform.MARK_PROFILE` |
+| `glyph/GlyphView.kt` | Pure renderer: one closed `Path` from `silhouette()`, Choreographer-clocked, reveal spring on show/hide. | `GlyphView` — `.mode` (HIDDEN/REST/LISTEN/WORK), `.analyzer` |
+| `ime/SayInputMethodService.kt` | **The keyboard.** Panel = glyph + status + ✕ / ✓ / back-to-keyboard. Starts listening on `onStartInputView` only if the controller agrees (the `gestures.py` rule); `onFinishInputView` under a live recording stops-and-keeps rather than drops; `deliver()` applies `focusPolicy` against the field focused *now*, commits at the cursor (one space if flush against a word), then `switchToPreviousInputMethod()`. | `SayInputMethodService` |
+| `store/TranscriptStore.kt` | SQLite with **the Mac's `transcripts` schema, column for column** (`audio_path` stays NULL), `summary()` (words, WPM, streak), change listeners. | `TranscriptStore` — `.insert()`, `.setOutcome()`, `.list()`, `.summary()`, `wordCount()` |
+| `ui/HomeActivity.kt` | One scroll: engine status line, a Try-it field with **Dictate** (in-app dictation through the same controller, into its own field — also the on-device diagnostic) and **Switch keyboard** (the system picker), the how-to card with step state, three KPIs, transcripts by day (tap expands, long-press copies), the models list (Use / Download / Cancel / long-press Remove), settings + vocabulary editors. | `HomeActivity` |
+| `ui/MicPermissionActivity.kt` | See-through activity that puts the mic prompt up on the keyboard's behalf. | — |
+| `overlay/SayAccessibilityService.kt` | **Say anywhere — the Mac's overlay + injector on Android.** An accessibility service is the only thing that may type into another app's field without being its keyboard, and it may hang a window over every app without the "draw over other apps" permission. Hosts the [Bubble]; on tap runs a dictation through the same controller; on delivery re-finds the focused editable node, applies `focusPolicy`, and splices the words in at the cursor (`ACTION_SET_TEXT` + `ACTION_SET_SELECTION`, else clipboard + `ACTION_PASTE` with the clipboard restored). Password fields are refused. Privacy is structural: the only node ever read is the focused one, at insertion time; visibility uses window/focus events, no text. | `SayAccessibilityService` — `isEnabled(context)`, `instance` |
+| `overlay/Bubble.kt` | The floating mark: `TYPE_ACCESSIBILITY_OVERLAY` window, non-focusable, non-touch-modal. A 72 dp pill holding the **Say mark** at rest; 232 dp bar with the live spectrum while listening; the sweep while processing. Tap = start / finish, hold = cancel, drag = move (position persisted). Anchors above the keyboard, and above the focused *field* when that would overlap it. | `Bubble` — `.visible`, `.mode`, `.anchorAbove(keyboardTop, fieldTop)`, `.destroy()` |
+| `overlay/TextSplice.kt` | Pure: where dictated text goes inside a field that already has text (cursor, selection, one space either side when flush against a word). `TextSpliceTest` pins it. | `TextSplice.splice(existing, selStart, selEnd, inserted) → Splice(text, cursor)` |
+| `res/xml/accessibility_service_config.xml` | Event types (focus, window state, windows changed), `canRetrieveWindowContent`, `flagRetrieveInteractiveWindows` (needed for `windows`, which is how "a keyboard is up" is known). | — |
+| `../debug/…/ReplayReceiver.kt`, `WavFileSource.kt` | **Debug builds only.** `am broadcast … DEBUG_REPLAY --es path <wav> [--es mode engine] [--es model <id>]` replays a stored dictation through the whole pipeline — the Android `replay_bench`. | — |
+| `res/xml/method.xml` | One subtype, `imeSubtypeMode="voice"`, **`isAuxiliary="false"`** — regular, so the globe key and the switcher offer Say on phones whose keyboard has no voice key (see the gotcha). | — |
+
 ---
 
 ## API Contract
@@ -222,6 +262,10 @@ cd desktop && make dmg                           # → Say_0.1.0_aarch64.dmg (un
 | `/stats/vocabulary` (see above) | — | — | **Declared `def`, not `async def`** — the only CPU-bound route in the app, and on the event loop it would stall `/health` and the SSE stream for its whole duration. Memoised on `(limit, row count, newest id)` |
 | `/overlay/preview` | POST | — | `{ shown: bool, reason?: str }` — flash the real glyph so a colour can be judged in place |
 | `/transcripts/{id}/copy` | POST | — | `{}` (telemetry stub) |
+| `/transcripts/{id}/correction` | POST | body `{ text }` | `Correction` (`source: 'manual'`) — the user's own version; replaces an earlier one; `transcripts.text` is untouched. 400 empty or over 100k chars, 404 unknown id. **Declared `def`** (CPU-bound alignment) |
+| `/transcripts/{id}/correction` | DELETE | — | `{ deleted: bool }` |
+| `/snippets` | GET | — | `{ snippets: {trigger: text}, min_trigger_words, max_snippets }` |
+| `/snippets` | POST | body `{ snippets }` | Same shape. Replaces the whole set; validated first (400 with the reason, nothing written) |
 | `/models` | GET | — | `{ active: str, cache_bytes: int, models: ModelInfo[] }` |
 | `/models/active` | POST | body `{ id }` | `{ active: str }` — persists + live-swaps engine; 400 if unknown |
 | `/models/{id}/download` | POST | `id` is `:path` (has `/`) | `ModelDownload` — starts bg download; 404 unknown, 507 if disk full |
@@ -262,10 +306,6 @@ type CorrectionSummary = { insertions: number; inserted_total: number; corrected
 type RetentionMode = 'keep_all' | 'days' | 'size';
 type Recording = { id: number; ts_utc: string; text: string; word_count: number; audio_seconds: number; model: string; inject_method: string; target_app: string | null; success: boolean; size_bytes: number; has_audio: boolean };
 type RecordingsConfig = { save_recordings: boolean; retention_mode: RetentionMode; retention_days: number; max_bytes: number; total_bytes: number; count: number };
-| `/transcripts/{id}/correction` | POST | body `{ text }` | `Correction` (`source: 'manual'`) — the user's own version; replaces an earlier one; `transcripts.text` is untouched. 400 empty or over 100k chars, 404 unknown id. **Declared `def`** (CPU-bound alignment) |
-| `/transcripts/{id}/correction` | DELETE | — | `{ deleted: bool }` |
-| `/snippets` | GET | — | `{ snippets: {trigger: text}, min_trigger_words, max_snippets }` |
-| `/snippets` | POST | body `{ snippets }` | Same shape. Replaces the whole set; validated first (400 with the reason, nothing written) |
 type RecordingsConfigPatch = Partial<Pick<RecordingsConfig, 'save_recordings' | 'retention_mode' | 'retention_days' | 'max_bytes'>>;
 ```
 
@@ -546,46 +586,6 @@ type RecordingsConfigPatch = Partial<Pick<RecordingsConfig, 'save_recordings' | 
   controller refuses — the shipped engine's own log holds **58 refusals, every one during
   PROCESSING**, 56 of them directly after an `Fn down` — but nothing told the glyph or the mic:
   the mark switched from the processing sweep to live spectrum and followed the voice, the old
-- **The glyph is one path, not twelve layers.** `waveform.silhouette()` returns a single closed
-  polygon for the whole mark. Twelve `CALayer`s would disagree about sub-pixel column boundaries
-  (visible seams) and would read as a row of separate meters; the reference mark is one stepped
-  silhouette standing on one base. Column x is snapped to a device pixel so the vertical steps stay
-  crisp; bar tops are deliberately **not** snapped, or heights stair-step as they move.
-- **Neighbour coupling is what makes it feel like one system.** Each bar is its own asymmetric
-  spring (fast slightly-under-damped attack, slow critically-damped release), then a diffusion pass
-  pulls each bar toward its neighbours. Drop the coupling and you get twelve independent VU meters;
-  raise it and the spectrum smears into a blob. A consequence worth knowing before "fixing" it: an
-  isolated full-scale band settles at ~0.71, not 1.0, because the membrane bleeds it sideways
-  (`test_bars_rise_toward_their_band_and_settle` pins this).
-- **Tune the overlay against the stored corpus, not against your own voice.**
-  `say/tools/waveform_bench.py --stats` replays every saved dictation and reports per-band medians;
-  if they slope, the spectral tilt is wrong and one end of the glyph is dead. That is how
-  `TILT_DB_PER_BAND` was set (2.0 → 3.0 took the residual from -0.037 to -0.003 level/band, i.e.
-  every band from 94 Hz to 5.2 kHz equally active). The same loop caught the gate bug below.
-- **A noise floor that rises quickly will chase the speaker and shut the gate mid-sentence.**
-  `NOISE_RISE_DB_PER_S` was 1.5, which meant a long sentence lifted the floor ~15 dB into the
-  speaker's own level; measured over the corpus the gate was fully open for only 37% of voiced
-  blocks. At 0.4 dB/s (plus a `NOISE_CEIL_DB` clamp) it is 78%. Falling is fast, rising is slow —
-  a room gets quiet suddenly and loud gradually. `test_noise_floor_cannot_chase_a_long_utterance`
-  guards it.
-- **`setFloatingPanel_` assigns the window level, so it must come *before* `setLevel_`.** The glyph
-  asked for `NSStatusWindowLevel` (25) on the line it was created and then spent its entire life at
-  `NSFloatingWindowLevel` (3), because `setFloatingPanel_(True)` six lines later is implemented by
-  *setting the level* and silently won. Floating level still clears ordinary windows, so it looked
-  correct in casual use and disappeared exactly where dictation happens — under full-screen apps and
-  other apps' floating panels. Two things made it survivable for so long and both are now closed:
-  `overlay_do` swallowed every overlay failure at **debug**, invisible at the engine's INFO level (now
-  a once-per-action **warning**), and the overlay tests were all pure because "the drawing needs a
-  window server" — so nothing ever asked the panel what level it was actually at.
-  `test_overlay_window.py` builds a real panel and asks; verified to fail (`3 != 25`) against the old
-  ordering. `_build()` also re-checks the level itself and logs an error if it ever fails to stick.
-  **Diagnose the glyph by interrogating the window, not by reading the drawing code** —
-  `CGWindowListCopyWindowInfo` shows its real bounds/alpha/level in the *running* engine, and
-  `tools/overlay_preview.py --report` proves the frame clock independently.
-- **A multi-colour glyph is still one path — the colours are clipped through it.** The
-  invariant that the mark is a single closed polygon (see above) is what stops it reading as
-  twelve separate meters, so themes do **not** get twelve layers. `overlay.py` keeps a
-  `_paint` `CALayer` holding one solid colour layer per column, masked by a `CAShapeLayer`
   job's READY event then `dismiss()`ed it mid-sentence, the words were never captured, and
   because the refused path never called `disarm()` the mic stream stayed open with the indicator
   lit. Replayed with the real listener, controller and overlay (`legacy` vs `bridge` wiring): the
@@ -626,6 +626,46 @@ type RecordingsConfigPatch = Partial<Pick<RecordingsConfig, 'save_recordings' | 
   **before** `recorder.arm()` for the same reason. `arm()` and `listen()` render identically on
   purpose: there is deliberately no visual event at the moment a gesture becomes a recording,
   because that is a transition the user did not ask for and would only read as a glitch.
+- **The glyph is one path, not twelve layers.** `waveform.silhouette()` returns a single closed
+  polygon for the whole mark. Twelve `CALayer`s would disagree about sub-pixel column boundaries
+  (visible seams) and would read as a row of separate meters; the reference mark is one stepped
+  silhouette standing on one base. Column x is snapped to a device pixel so the vertical steps stay
+  crisp; bar tops are deliberately **not** snapped, or heights stair-step as they move.
+- **Neighbour coupling is what makes it feel like one system.** Each bar is its own asymmetric
+  spring (fast slightly-under-damped attack, slow critically-damped release), then a diffusion pass
+  pulls each bar toward its neighbours. Drop the coupling and you get twelve independent VU meters;
+  raise it and the spectrum smears into a blob. A consequence worth knowing before "fixing" it: an
+  isolated full-scale band settles at ~0.71, not 1.0, because the membrane bleeds it sideways
+  (`test_bars_rise_toward_their_band_and_settle` pins this).
+- **Tune the overlay against the stored corpus, not against your own voice.**
+  `say/tools/waveform_bench.py --stats` replays every saved dictation and reports per-band medians;
+  if they slope, the spectral tilt is wrong and one end of the glyph is dead. That is how
+  `TILT_DB_PER_BAND` was set (2.0 → 3.0 took the residual from -0.037 to -0.003 level/band, i.e.
+  every band from 94 Hz to 5.2 kHz equally active). The same loop caught the gate bug below.
+- **A noise floor that rises quickly will chase the speaker and shut the gate mid-sentence.**
+  `NOISE_RISE_DB_PER_S` was 1.5, which meant a long sentence lifted the floor ~15 dB into the
+  speaker's own level; measured over the corpus the gate was fully open for only 37% of voiced
+  blocks. At 0.4 dB/s (plus a `NOISE_CEIL_DB` clamp) it is 78%. Falling is fast, rising is slow —
+  a room gets quiet suddenly and loud gradually. `test_noise_floor_cannot_chase_a_long_utterance`
+  guards it.
+- **`setFloatingPanel_` assigns the window level, so it must come *before* `setLevel_`.** The glyph
+  asked for `NSStatusWindowLevel` (25) on the line it was created and then spent its entire life at
+  `NSFloatingWindowLevel` (3), because `setFloatingPanel_(True)` six lines later is implemented by
+  *setting the level* and silently won. Floating level still clears ordinary windows, so it looked
+  correct in casual use and disappeared exactly where dictation happens — under full-screen apps and
+  other apps' floating panels. Two things made it survivable for so long and both are now closed:
+  `overlay_do` swallowed every overlay failure at **debug**, invisible at the engine's INFO level (now
+  a once-per-action **warning**), and the overlay tests were all pure because "the drawing needs a
+  window server" — so nothing ever asked the panel what level it was actually at.
+  `test_overlay_window.py` builds a real panel and asks; verified to fail (`3 != 25`) against the old
+  ordering. `_build()` also re-checks the level itself and logs an error if it ever fails to stick.
+  **Diagnose the glyph by interrogating the window, not by reading the drawing code** —
+  `CGWindowListCopyWindowInfo` shows its real bounds/alpha/level in the *running* engine, and
+  `tools/overlay_preview.py --report` proves the frame clock independently.
+- **A multi-colour glyph is still one path — the colours are clipped through it.** The
+  invariant that the mark is a single closed polygon (see above) is what stops it reading as
+  twelve separate meters, so themes do **not** get twelve layers. `overlay.py` keeps a
+  `_paint` `CALayer` holding one solid colour layer per column, masked by a `CAShapeLayer`
   carrying *the same silhouette path* the single-colour `_shape` layer uses. Columns
   therefore still share exact edges, each colour runs down through the continuous base, and
   exactly one of `_shape` / `_paint` is ever visible. Twelve sibling rects would disagree at
@@ -746,6 +786,127 @@ type RecordingsConfigPatch = Partial<Pick<RecordingsConfig, 'save_recordings' | 
   decode it again. (B11) Read `config.SHOW_NOTIFICATIONS` at call time. (B12) Kept audio is capped
   at 2 GiB by default. (B13) ruff and mypy are gates; CI runs pytest.
 
+**Android (`android/`):**
+- **A voice IME marked `isAuxiliary="true"` is unreachable on most real phones.** The first
+  real-device install could not dictate at all: Gboard and every OEM keyboard have no
+  third-party voice key, the globe-key rotation skips auxiliary subtypes, and the switcher
+  hides them unless a keyboard is already up — so there was no way in. `method.xml` now
+  declares a regular subtype (still `imeSubtypeMode="voice"`, so keyboards that do have a
+  voice key still find it), Home has a **Dictate** button that runs the whole pipeline into
+  its own field without any keyboard switching, a **Switch keyboard** button that opens the
+  system picker (verified on the emulator: the picker lists "Say / Say voice input" next to
+  Gboard), and an engine status line so a failure says what failed. The emulator never
+  showed the problem because `adb shell ime set` bypasses every one of those doors.
+- **A microphone that fails must not read as "didn't catch that".** `AudioSource.read` throws
+  on an AudioRecord error instead of returning a negative count; the recorder records the
+  reason in `Capture.failure` and the controller emits ERROR with it when nothing was
+  delivered. Before this, a device that refused the mic produced the same message as silence.
+- **Unthrottled download progress killed the app, and only an honest end-to-end test found it.**
+  `ModelManager` reported progress on every 64 KB read — 780 times for the small model, 4,600 for
+  the big one — and each report rebuilt the model list on the main thread. The download outran the
+  UI thread, the queued work never drained, and the heap died: `OutOfMemoryError` at 192 MB,
+  50 s in, with the crash landing wherever the next allocation happened to be (Material's view
+  inflation), which says nothing about the cause. **Diagnose this class of bug by sampling
+  `dumpsys meminfo … | grep 'Java Heap'` while it runs** — a straight 3.6 MB/s climb to the
+  ceiling is retention, not churn. One report per whole percent and no faster than
+  `PROGRESS_INTERVAL_MS` (200 ms) caps it at ~100 for any download at any speed;
+  `ProgressThrottleTest` pins that arithmetic. Nobody had ever tapped Download on a real build:
+  every earlier model came from `adb push`.
+- **A failing test can leave a stale APK behind, and you will debug the wrong binary.**
+  `gradlew assembleRelease testDebugUnitTest` may run the tests first; when they fail the assemble
+  never happens and a `cp` from the output directory silently copies the previous build. Twenty
+  minutes went into "the throttle does not work" against an APK that did not contain it. Build,
+  then test, as separate invocations — or read the timestamp before trusting the file.
+- **"App not installed." with no reason is a stale `versionCode`.** A phone's package installer
+  refuses to *reinstall* the same code over an existing app and reports nothing else — a OnePlus
+  hit this on 2026-09-07 sideloading an 0.1.0/`versionCode=1` build over the 0.1.0/`1` build that
+  had installed an hour earlier. Every local build now takes a strictly increasing code (minutes
+  since 2026-01-01, `-PsayVersionCode=N` to pin one), the code rides in `versionName` so the
+  installed build is identifiable from Settings → Apps and from Home's own footer, and
+  `make release` refuses to build without the local keystore and prints the certificate DN plus
+  the version it produced. **The whole class of failure is silent, so the build has to be the
+  thing that speaks** — the same lesson as the Mac's `SAY_SIGN_ID` (a release signed with the
+  debug key produces the identical dialog, which is why `make release` now checks for
+  "Say Local Signing" rather than trusting it).
+- **The APK carried three permissions the app does not use.** `ai.moonshine:moonshine-voice`
+  depends on WorkManager for its own background model downloader (Say has its own in
+  `ModelManager`), and the manifest merge added `WAKE_LOCK`, `RECEIVE_BOOT_COMPLETED` and
+  `FOREGROUND_SERVICE`. Excluding `androidx.work` drops all three, and Room behind them.
+  A dictation app whose claim is that it does nothing behind your back should not be asking to
+  start at boot.
+- **The bundled model compresses 35% (51 MB → 33 MB), so it is *not* stored uncompressed.**
+  `noCompress` for `ort`/`bin` bought a plain-read extraction and cost 18 MB of APK — the wrong
+  trade for a file read exactly once, on first launch, while the UI already says "Loading the
+  model…". Release APK: 83 MB → 64 MB.
+- **The floating mark holds the *logo* at rest, not the Mac's resting ripple.** The ripple is
+  right for a glyph that only exists while you dictate; as a persistent control it drew a
+  one-pixel line in an empty pill, with nothing to aim a thumb at. `BarMotion.State.MARK` holds
+  `Waveform.MARK_PROFILE` — `gen_logo.py`'s six columns, two bands each — and **neighbour
+  coupling is switched off in that state only**, because diffusion rounds the six crisp steps
+  into a hill. The logo has always been a frozen frame of this overlay; here it is literally that.
+- **The mark must never sit on the field it is dictating into.** Anchored purely above the
+  keyboard it lands exactly on a messaging app's compose row, which is the one thing it must not
+  cover. `Bubble.anchorAbove(keyboardTop, fieldTop)` moves it above the *field* when the
+  keyboard-anchored rectangle would overlap it, and a mark the user has dragged keeps its
+  position but is still clamped above the keyboard — a bubble underneath one cannot be tapped.
+  Only the focused node's **bounds** are read for this, never its text.
+- **The floating bubble is an accessibility overlay, and the microphone works from it without a
+  foreground service — measured, not assumed.** `TYPE_ACCESSIBILITY_OVERLAY` needs no
+  "draw over other apps" grant and the system keeps the process alive while the service is
+  enabled. The open question was whether AudioRecord would be *silenced* for an app with no
+  activity in front: on the Android 16 emulator `dumpsys audio` showed the VOICE_RECOGNITION
+  client `silenced:false` and `appops get … RECORD_AUDIO` said `allow … (running)`, uid mode
+  `foreground` — the accessibility binding carries the mic capability. So there is no
+  persistent notification and no microphone foreground service. If a future Android
+  silences it, the tell is `dumpsys audio` saying `silenced:true`; the fix is a
+  `foregroundServiceType="microphone"` service started from the bubble tap.
+- **Verified into a real third-party app:** with Google Messages in front and Gboard up, a
+  replayed dictation went bubble tap → recorder → Moonshine → postprocess → store →
+  `ACTION_SET_TEXT` into the compose box; the row reads `inject_method=a11y`,
+  `target_app=com.google.android.apps.messaging`. The bubble sits just above the keyboard
+  because that is where the thumb already is; it is draggable because every app puts
+  something there.
+- **`uiautomator dump` restarts every enabled accessibility service.** Each dump re-binds
+  them, which recreates the bubble and throws away an in-flight dictation — a test harness
+  artefact that looked like a crash. Drive the bubble from `dumpsys window windows` (its
+  `frame=`) instead, and never dump mid-dictation. The `bubble shown at` log line is the
+  position at attach time; the keyboard is still animating then, so read the live frame.
+- **Digital silence poisons the streaming model.** Fed thirty seconds of exact zeros (the
+  emulator's host-less microphone twice over), medium-streaming-en decoded real speech to
+  `""` in 0.09 s from then on; a reload recovered it only on the second decode, a process
+  restart fully. `MoonshineTranscriber.transcribe` now returns `""` for any clip whose peak is
+  under −80 dBFS without touching the model, and the controller calls a fully silent clip
+  "nothing heard" before any decode. A phone mic never delivers exact zeros for a whole clip,
+  but dropout blocks are real (the Mac saw one in 141 of 148 dictations), so the guard stays.
+- **Android's regex engine is ICU, not OpenJDK's, and the JVM tests cannot tell.** `(?U)` (the
+  flag that makes `\w` Unicode on the JVM) is a `PatternSyntaxException` on the device — it
+  threw during `Postprocess`'s class init, which surfaced as "model failed to load", on the first
+  device run after 105 green JVM tests. Write `[\p{L}\p{N}_]` out and use lookarounds instead of
+  `\b`; never rely on an inline flag that only one of the two engines knows.
+- **An IME window carries the platform's InputMethod theme, not the app's.** Inflate the panel
+  bare and every `?attr/…` and Material style fails to resolve — the service crashes the first
+  time it is shown, and the system quietly falls back to Gboard. `onCreateInputView` inflates
+  through `ContextThemeWrapper(this, R.style.Theme_Say)`.
+- **`am force-stop` on the package kills the keyboard service, and the system then drops Say as
+  the selected IME.** A test that restarts the app must select Say *afterwards*; the first two
+  emulator runs "did nothing" for exactly this reason.
+- **`commitText` inserts at the cursor.** Tapping into the middle of existing text puts the
+  dictation there; the replay test that read the field back saw two transcripts interleaved
+  and thought the engine had doubled them. Correct behaviour — every keyboard does this.
+- **A model is installed only when its `.complete` marker exists**, written after the last
+  component lands. The controller falls back to the bundled model *and resets the setting* when
+  the chosen one is not installed, so the Models list never claims a model that is not there.
+  A hand-pushed model without the marker is silently ignored — which is what happened when the
+  Mac's medium model was copied over for the parity check (the redirect ran as the shell user).
+- **Measured on the emulator (Apple Silicon host, so faster than any phone):** tiny decodes at
+  RTF 0.04–0.08; the tail wait after "done" was 0.11 s for a 22 s dictation because the earlier
+  segments had decoded while it was still "speaking". Medium on the same 67 s clip the Mac had
+  transcribed with the same model family: word-level distance 0.21 against the Mac's text (0.1.5
+  vs 0.0.62 of the runtime, and different segment boundaries) — the parity is real.
+- **Bigger downloads are the whole quality story.** Tiny is offline-from-first-launch and cheap,
+  and on accented, fast, jargon-heavy speech it is noticeably worse than the Mac's medium
+  ("delegate" → "delineate", "sub-agents" → "Spawns, obedience"). The Models list says so.
+
 **TypeScript (`desktop/src/`):**
 - TypeScript strict mode, target ES2021, path alias `@/*` → `src/*`.
 - React Query for all data fetching (30s staleTime, 4 retries with exponential backoff).
@@ -777,6 +938,12 @@ type RecordingsConfigPatch = Partial<Pick<RecordingsConfig, 'save_recordings' | 
   in the UI — puts the threshold that decides whether a claim is *true* in one language and
   the words that make the claim in another, and they drift. Render the markup as elements;
   never `dangerouslySetInnerHTML`.
+- **A build must never read `runtime.json`.** `vite.config.ts` used to run its `define` block for
+  `vite build` as well as the dev server, so every build made while an engine was running baked that
+  engine's bearer token into the shipped JavaScript (`desktop/dist` from the Oct 1 build carried one).
+  Runtime values are read only when `command === 'serve'`; the packaged app gets its endpoint from the
+  Tauri `get_engine_endpoint` command. `make check-bundle` (run after `ui-build` and after `app`)
+  fails the build if `dist/` contains the running engine's token.
 - **Webfonts must be self-hosted — the CSP blocks remote ones, silently.** `index.html` linked
   `fonts.googleapis.com` for Fraunces / Geist / Geist Mono, but the `tauri.conf.json` CSP is
   `style-src 'self' 'unsafe-inline'` and `font-src 'self' data:`. Neither lists the Google hosts, so the
@@ -801,6 +968,8 @@ HOTKEY = 'fn'                                     # prefer Fn listener
 HOTKEY_LEGACY = 'ctrl+space'                      # pynput fallback
 SAMPLE_RATE = 16_000                              # Whisper requirement
 MAX_RECORDING_SECONDS = 900                       # 15-min safety cap (auto-stops + transcribes); user-overridable
+MODEL_IDLE_UNLOAD_S = 600                         # drop the Whisper weights after this long idle (~2.1 GB back); 0 disables
+SNIPPETS: dict[str, str] = {}                     # trigger -> text; whole utterance only, 2+ words, typed verbatim (snippets.py)
 MIN_AUDIO_SECONDS = 1.0                           # reject too-short clips (19 of the 20 stored clips under 1 s were decoder inventions)
 PRE_ROLL_SECONDS = 0.5                            # ring buffer before hotkey
 DEVICE_WATCH_INTERVAL_S = 2.0                     # input device polling
@@ -893,6 +1062,7 @@ CREATE INDEX idx_corr_transcript ON corrections(transcript_id);
 | `~/Library/Application Support/Say/say.lock` | Single-instance advisory lock (fcntl) | default |
 | `~/Library/Application Support/Say/fn_usage_backup.json` | Original AppleFnUsageType (crash-safe restore) | default |
 | `~/Library/Application Support/Say/first_run_complete` | Marker file (onboarding done) | default |
+| `~/Library/Application Support/Say/review_queue.json` | `{ version, model, entries: [{ id, rank, differing_words, words, share }] }` — a cache written by `tools/disagreement_mine.py`; ids and counts only | 0600 |
 | `~/Library/Application Support/Say/recordings/<id>.wav` | Per-dictation audio receipt — **only when `SAVE_RECORDINGS` is on** | default |
 | `~/Library/Application Support/Say/exports/Say-Recordings-*.zip` | Local export bundles (clips + manifest); revealed in Finder | default |
 | `~/Library/Logs/Say/say.log` | Rotating log (10MB × 5 files) | default |
@@ -938,12 +1108,6 @@ Security model: loopback-only API (127.0.0.1), per-launch random Bearer token (`
   `SIGN_ID := $(if $(SAY_SIGN_ID),$(SAY_SIGN_ID),Say Local Signing)` and then did a bare
   `export SAY_SIGN_ID` — exporting the *input* variable, empty, not the resolved one. `Say.spec` read it
   with `os.environ.get('SAY_SIGN_ID', 'Say Local Signing')`, whose default only applies when the key is
-- **A build must never read `runtime.json`.** `vite.config.ts` used to run its `define` block for
-  `vite build` as well as the dev server, so every build made while an engine was running baked that
-  engine's bearer token into the shipped JavaScript (`desktop/dist` from the Oct 1 build carried one).
-  Runtime values are read only when `command === 'serve'`; the packaged app gets its endpoint from the
-  Tauri `get_engine_endpoint` command. `make check-bundle` (run after `ui-build` and after `app`)
-  fails the build if `dist/` contains the running engine's token.
   **absent**; a present-but-empty value sailed through, `security find-certificate -c ''` failed, and the
   spec fell back to `-`. Net effect: **every build by anyone who had not manually exported `SAY_SIGN_ID`
   ad-hoc signed the engine**, certificate installed or not — producing `designated => cdhash H"…"` and
@@ -962,8 +1126,6 @@ Security model: loopback-only API (127.0.0.1), per-launch random Bearer token (`
   that launches, shows nothing, and reads as "the interface won't load" — while `/health`, `/listener`
   and the Fn key are all perfectly fine, because the *engine* is exactly what got installed. Diagnose
   with `PlistBuddy -c "Print :CFBundleIdentifier" /Applications/Say.app/Contents/Info.plist` and by
-MODEL_IDLE_UNLOAD_S = 600                         # drop the Whisper weights after this long idle (~2.1 GB back); 0 disables
-SNIPPETS: dict[str, str] = {}                     # trigger -> text; whole utterance only, 2+ words, typed verbatim (snippets.py)
   checking whether `Contents/Resources/SayEngine.app` exists. The engine image is now
   `SayEngine-v…-internal.dmg` with no drop-link and is no longer built by `make all`; install with
   `cd desktop && make install`, which refuses anything that isn't the shell.
@@ -974,7 +1136,14 @@ SNIPPETS: dict[str, str] = {}                     # trigger -> text; whole utter
 
 ## Platforms
 
-macOS arm64 ships today. The engine **core is already platform-neutral** — 26 modules
+macOS arm64 ships today, **and so does Android** (`android/`, arm64 phones, minSdk 28): not a
+port of the Python process but a Kotlin keyboard on the same Moonshine runtime, with
+`postprocess.py`, `streaming.py` and `waveform.py` ported line for line and their test suites
+run on the JVM (124 tests). Verified end to end on an Android 16 emulator by replaying stored
+dictations through the real keyboard path (see the gotchas). Whisper is not offered there —
+MLX is Apple-only — so the Android model list is Moonshine tiny/small/medium.
+
+The engine **core is already platform-neutral** — 26 modules
 (`config`, `settings`, `validation`, `vocabulary`, `overlay_theme`, `waveform`,
 `postprocess`, `corrections`, `streaming`, `model_catalog`, `model_manager`,
 `transcriber`, `audio`, `device_watcher`, `injector`, `hotkey`, `recordings`, `metrics`,
@@ -1056,9 +1225,16 @@ permission story.
 | `test_streaming.py` | 33 | Silence splitting (lossless, pause/min/max rules), carry-over prompt, incremental segmenter, session join + failure isolation, **decode attempts counted (silence vs failure)**, **a short tail gets the terms-only prompt with no carry-over**, progress reported per decode and a raising progress callback never breaks the session |
 | `test_postprocess.py` | 71 | Soundex, fuzzy vocabulary repair (incl. split/joined words + over-match guards), formatting rules, switches, `asr_prompt()`, **repetition-loop collapse (word/phrase/intra-token, natural-repetition guards) + style-seed scaling** |
 | `test_postprocess.py` (see above) / `test_injector.py` | +4 | Secure-input detection: probe never raises, injection refused, neither backend called |
-| `~/Library/Application Support/Say/review_queue.json` | `{ version, model, entries: [{ id, rank, differing_words, words, share }] }` — a cache written by `tools/disagreement_mine.py`; ids and counts only | 0600 |
 | `test_corrections.py` | 39 | Correction capture: **continuation is not correction** (both the pure-trailing case and the one fused into the boundary block), **a rewrite is not correction**, leading expansion is not mangled by the trailing-only split, case/punctuation alone is the formatter's business, term-pair extraction + size guards, store roundtrip + rate denominators, `_relocate` gives up rather than guessing, watcher records/ignores/fails-closed, **document context never reaches the database**, **unmeasured insertions are never scored as clean** (the 109-row regression), a clean read-back still counts as measured, a vanished field does not, timers bounded and cancellable |
 | `test_owner_watch.py` | 21 | **The engine must not outlive the app.** A real child process is spawned and killed: the watchdog fires on a clean exit *and* on SIGKILL (Force Quit, which the shell cannot catch), the poll backstop still fires with kqueue disabled, an owner already gone at startup fires inline (so a quit during model load can't finish arming the engine), pid 0/1 is never watched (launchd never exits — watching it is watching nothing), `stop()` ends the watch without shutting down, the shutdown runs exactly once, a failing callback can't escape, **an unreadable process state counts as alive**, `runtime.json` records an owner for a sidecar but none for a hand-started engine, and the **exit backstop** fires when the clean shutdown stalls, runs its cleanup first, survives a failing cleanup and is cancellable. All seven mutations of the fix were verified to break these |
+| `test_manual_corrections.py` | 23 | **The label source that does not need the read-back.** `word_errors` counts trailing misses that `diff()` would call continuation; saving keeps what Say produced and stores the pair; saving again replaces; unchanged text records "checked, right"; **a manual correction does not move the read-back rate**; routes: 404/400/401, line breaks survive, DELETE undoes, and the routes are not coroutines |
+| `test_review_queue.py` | 19 | Ranking (agreement is not queued, case/punctuation is not disagreement, short clips excluded, bounded), the queue file (beside the DB, 0600, **holds no transcript text**, corrupt = empty), the feed (`review` set, cleared once the user has checked, a corrupt queue cannot break `/transcripts`), plus the pure halves of `readback_probe` (timing vs unreadable vs reformatted) and `health_report` (weekly tally) |
+| `test_suggestions.py` | 10 | A one-word pair is widened with the following word (else the preceding one), a lone word says it could not be, formatting-only and continuation yield nothing, repeats are counted across days and against the whole corpus, two different fixes for one phrase are conflicts, **a transcript checked and left alone counts against a rule**, nothing is suggested until `should_suggest` says yes, an existing rule is not offered again |
+| `test_snippets.py` | 13 | Whole utterance or nothing (a trigger inside a sentence never fires), case and punctuation ignored, Hindi triggers, one-word and duplicate triggers refused, the expansion typed verbatim past post-processing, ordinary dictation untouched, the API refuses a bad set with nothing written |
+| `test_accuracy_bench.py` | 5 | Newest third held out, word error rate counts substitutions and missed trailing words but not case or punctuation, the recommendation uses the held-out number and names a faster near-tie without inventing one |
+| `test_recall.py` | 8 | **Undo may never delete the user's text**: allowed only with no key press or click since, the same app, inside 30 s; unknown input counts refuse; emoji, decomposed accents and Devanagari are refused rather than guessed; one Backspace per character otherwise |
+| `test_provenance.py` | 4 | The fingerprint changes when a replacement, the prompt or the language changes, and never contains their text; **a packaged build still has a code version** and a dev checkout is not mistaken for one |
+| `test_corrections_report.py` | 1 | A measured-but-excluded rewrite is reported as measured, not as "none measured" |
 | `test_recordings.py` | 12 | WAV save+link, list/totals, read bytes, delete one/all, retention (days/size), ZIP export, config apply, **the shipped default is a 2 GiB size cap** |
 | `test_audio.py` | 21 | AudioRecorder pre-roll, event dispatch, **`live_seconds` accounting + open-before-capture ordering**, and `DeviceSerialisationTests`: **arm() and start() never open the device concurrently**, **the PortAudio reset cannot run while another thread is in `Pa_OpenStream`**, a close cannot race an open, a wedged device is bounded rather than infinite and parks **one** thread not one per press, arm() never raises into the hotkey thread while start() still reports a dead mic (6 of the 7 verified to fail against the pre-fix module) |
 | `test_model_catalog.py` | 10 | Catalog data, cache state (HF + Moonshine), disk usage, config sync, backend field |
@@ -1075,6 +1251,7 @@ permission story.
 | `test_text_inject.py` | 14 | CGEvent + clipboard injection; **UTF-16 chunking** (units not code points, no split pair, lossless, the length handed to Quartz, a real Quartz round trip with emoji); **clipboard restore of every item and type**, string fallback, a failed restore never fails the paste |
 | `test_transcriber.py` | 29 | Model loading, hallucination filter (incl. punctuation-normalized variants), swap, **below-real-time decodes warn** (fast ones do not, tiny clips never do) |
 | `test_validation.py` | 5 | Config validation rules (incl. retention mode) |
+| `android/…/PostprocessTest.kt`, `StreamingTest.kt`, `WaveformTest.kt`, `HallucinationsTest.kt`, `TextSpliceTest.kt`, `SilenceGuardTest.kt`, `ProgressThrottleTest.kt` | 124 (JVM) | **The Python suites' fixtures against the Kotlin ports**, so the two implementations cannot drift: the real repetition-loop failures, difflib parity values computed by Python, the glyph's onset/bloom/dropout regressions, the session's completeness and attempt counting. `cd android && make test` |
 | `test_build_signing.py` | 4 | **The build must never silently ad-hoc sign**: `Say.spec` treats an empty `SAY_SIGN_ID` as unset, both Makefiles export the *resolved* `$(SIGN_ID)`, and a real `make` run exports a non-empty identity |
 
 CI: GitHub Actions on `macos-14` (arm64), Python 3.12, running `ruff check`, `mypy say` (a gate, not advisory) and `pytest say/tests`. `SAY_CI=1` skips tests needing Accessibility/Input Monitoring grants.
@@ -1110,6 +1287,7 @@ Env vars: `SAY_PYTHON` (default `~/.venvs/say/bin/python`), `SAY_MODEL` (default
 | `make app` | `npm run tauri:build` |
 | `make embed-engine` | **`ditto`** (NOT `rsync -aL`) the engine `Say.app` into shell's `Contents/Resources/SayEngine.app`, preserving framework symlinks + seal; verifies seal |
 | `make patch-plist` | **Strips xattrs FIRST** (see below), adds usage strings to shell Info.plist, renames shell exec to "Say", **verifies both landed (fatal)**, signs SHELL only with `SIGN_ID` (engine already validly signed — re-signing it would break it), verifies both seals, then prints both designated requirements and warns if the engine's is a bare cdhash |
+| `make check-bundle` | Fail if `dist/` contains the running engine's bearer token. Part of `ui-build` and `all` |
 | `make dmg` | `mkdir -p` the bundle/dmg dir (Tauri only emits `bundle/macos`, and create-dmg silently writes to the CWD if its target dir is missing), then create-dmg → `Say_0.1.0_aarch64.dmg` |
 | `make install` | Install the **shell** to `/Applications/Say.app`. Refuses any bundle whose id isn't `com.ritikyadav.say.desktop` or that has no embedded `SayEngine.app`; stages to `Say.app.staging`, verifies both seals, `lsregister -u`s the outgoing copy, then swaps — so a bad copy never replaces a working install |
 | `make clean` | Remove node_modules, dist, src-tauri/target, src-tauri/gen |
@@ -1146,12 +1324,3 @@ This CLAUDE.md is a living document. Agents **must** update it when they:
 9. **Discover a non-obvious pattern or gotcha** → Add to Code Conventions.
 
 **When updating**: Keep the same format (tables, not prose). Keep descriptions to one line per row. The goal is density — every line should save a future agent from reading a file.
-| `test_manual_corrections.py` | 23 | **The label source that does not need the read-back.** `word_errors` counts trailing misses that `diff()` would call continuation; saving keeps what Say produced and stores the pair; saving again replaces; unchanged text records "checked, right"; **a manual correction does not move the read-back rate**; routes: 404/400/401, line breaks survive, DELETE undoes, and the routes are not coroutines |
-| `test_review_queue.py` | 19 | Ranking (agreement is not queued, case/punctuation is not disagreement, short clips excluded, bounded), the queue file (beside the DB, 0600, **holds no transcript text**, corrupt = empty), the feed (`review` set, cleared once the user has checked, a corrupt queue cannot break `/transcripts`), plus the pure halves of `readback_probe` (timing vs unreadable vs reformatted) and `health_report` (weekly tally) |
-| `test_suggestions.py` | 10 | A one-word pair is widened with the following word (else the preceding one), a lone word says it could not be, formatting-only and continuation yield nothing, repeats are counted across days and against the whole corpus, two different fixes for one phrase are conflicts, **a transcript checked and left alone counts against a rule**, nothing is suggested until `should_suggest` says yes, an existing rule is not offered again |
-| `test_snippets.py` | 13 | Whole utterance or nothing (a trigger inside a sentence never fires), case and punctuation ignored, Hindi triggers, one-word and duplicate triggers refused, the expansion typed verbatim past post-processing, ordinary dictation untouched, the API refuses a bad set with nothing written |
-| `test_accuracy_bench.py` | 5 | Newest third held out, word error rate counts substitutions and missed trailing words but not case or punctuation, the recommendation uses the held-out number and names a faster near-tie without inventing one |
-| `test_recall.py` | 8 | **Undo may never delete the user's text**: allowed only with no key press or click since, the same app, inside 30 s; unknown input counts refuse; emoji, decomposed accents and Devanagari are refused rather than guessed; one Backspace per character otherwise |
-| `test_provenance.py` | 4 | The fingerprint changes when a replacement, the prompt or the language changes, and never contains their text; **a packaged build still has a code version** and a dev checkout is not mistaken for one |
-| `test_corrections_report.py` | 1 | A measured-but-excluded rewrite is reported as measured, not as "none measured" |
-| `make check-bundle` | Fail if `dist/` contains the running engine's bearer token. Part of `ui-build` and `all` |

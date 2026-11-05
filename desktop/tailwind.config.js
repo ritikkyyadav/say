@@ -18,6 +18,7 @@ export default {
 
         // Accents — use one dominant per surface, sparingly
         crail: { DEFAULT: '#d97757', deep: '#c66848' }, // Anthropic orange — the one energy colour
+        mark: '#bc2c61', // the logo's own raspberry — only ever the six columns of the mark
         'slate-blue': '#6a9bcc', // info / editorial links
         olive: '#788c5d', // success / "all good" status
         clay: '#bd8b6a', // soft illustration tint

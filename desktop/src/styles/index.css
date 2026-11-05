@@ -152,6 +152,36 @@
   --accent-glow:rgba(217,113,63,.18);
   --olive:#7C8C5C;
 
+  /* The mark's own colour — the logo, not an accent. Keep the two apart:
+     --accent is the UI's energy colour and is used on dozens of surfaces,
+     while --mark only ever fills the six columns of the logo. */
+  --mark:#BC2C61;
+  --mark-glow:rgba(188,44,97,.6);
+
+  /* The logo chip: the ground, and the mark fill on top of it. Every
+     surface that shows the logo on a tile reads this pair (.rail-logo on
+     the dark rail, .ob-mark on the onboarding card), so they change
+     together and can never disagree.
+
+     The ground is the mark's own raspberry, not the icon's cream tile.
+     One pair has to carry both surfaces, and cream only carries one of
+     them: against the near-white onboarding card a cream chip has
+     nothing to sit on and disappears. Raspberry asserts itself on the
+     dark rail and the light card alike -- and --mark-glow below is
+     already a raspberry shadow, which is what the chip was always meant
+     to be lit by. Cream ink on raspberry is 5.4:1.
+
+     Never declare either of these empty. An empty custom property is not
+     an unset one: it substitutes an empty token stream, the declaration
+     goes invalid at computed-value time, and `fill` -- being inherited --
+     then takes its PARENT's value, which is the initial black. That is a
+     black mark on a near-black rail, with nothing in the console. A
+     var() fallback cannot rescue it either: a fallback applies only to a
+     property that is guaranteed-invalid, and an explicitly-empty one is
+     not. say/tests/test_frontend_tokens.py pins this. */
+  --mark-chip:var(--mark);
+  --mark-chip-ink:#FAF9F5;
+
   --r-lg:22px;
   --r-md:16px;
 
@@ -210,16 +240,16 @@
   padding:18px 0 18px;position:relative;z-index:40;
 }
 .rail-logo{
-  width:44px;height:44px;border-radius:14px;background:var(--accent);
+  width:44px;height:44px;border-radius:14px;background:var(--mark-chip);
   display:grid;place-items:center;margin-bottom:28px;border:0;cursor:pointer;
-  box-shadow:0 6px 18px -6px rgba(217,113,63,.7);
+  box-shadow:0 6px 18px -6px var(--mark-glow);
   transition:transform .5s var(--ease),box-shadow .5s var(--ease);
   padding:0;
 }
 .rail-logo:hover{transform:translateY(-2px)}
 .rail-logo:active{transform:scale(.95)}
 .rail-logo svg{width:26px;height:auto;display:block}
-.rail-logo rect{fill:#fff;transition:none}
+.rail-logo rect{fill:var(--mark-chip-ink);transition:none}
 
 .rail-nav{display:flex;flex-direction:column;gap:6px;width:100%;align-items:center}
 .nav-btn{
@@ -488,6 +518,32 @@
 .ghost{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:8px;padding:5px 9px;font-size:11.5px;cursor:pointer;transition:.22s var(--ease-soft);display:flex;align-items:center;gap:5px;white-space:nowrap}
 .ghost:hover{border-color:var(--ink);color:var(--ink);background:var(--card-2)}
 .ghost svg{width:12px;height:12px}
+.ghost:disabled{opacity:.45;cursor:default}
+.ghost.solid{background:var(--ink);border-color:var(--ink);color:#fff}
+.ghost.solid:hover{background:var(--ink-2);color:#fff}
+/* Fixing a transcript in place. The editor replaces the text, so the row keeps
+   its shape and nothing else on the page moves. */
+.tfix{color:var(--accent-deep);font-weight:500}
+.tedit{
+  display:block;width:100%;max-width:94ch;min-height:74px;resize:vertical;
+  font:inherit;font-size:13.5px;line-height:1.62;color:var(--ink);
+  background:var(--card-2);border:1px solid var(--line);border-radius:8px;padding:9px 11px;
+}
+.tedit:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
+.tedit-bar{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
+.tedit-bar .hint{font-size:11.5px;color:var(--faint);margin-left:4px}
+.tedit-bar .err{font-size:11.5px;color:var(--accent-deep);margin-left:4px}
+.torig{font-size:12px;line-height:1.55;color:var(--faint);max-width:94ch;margin-top:8px;display:none}
+.torig b{color:var(--muted);font-weight:500}
+.trow.open .torig{display:block}
+/* Snippets editor: trigger, text, remove — one row each. */
+.snip{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr) auto;gap:8px;align-items:start;margin-bottom:8px}
+.snip input,.snip textarea{
+  font:inherit;font-size:13px;color:var(--ink);background:var(--card-2);
+  border:1px solid var(--line);border-radius:8px;padding:7px 10px;min-width:0;
+}
+.snip textarea{min-height:36px;resize:vertical;line-height:1.5}
+.snip input:focus,.snip textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
 
 .more{width:100%;margin-top:12px;padding:13px;border:1px dashed var(--line);background:transparent;border-radius:var(--r-md);color:var(--muted);font-size:13px;cursor:pointer;transition:.25s var(--ease-soft)}
 .more:hover{border-color:var(--accent);color:var(--accent-deep);background:var(--card)}
@@ -518,32 +574,6 @@
 .answer{margin-top:18px;padding:16px 18px;border-radius:var(--r-md);background:linear-gradient(150deg,#FDF3ED,#FAE7DA);border:1px solid rgba(217,113,63,.22);display:flex;gap:13px;align-items:flex-start}
 .answer .b{width:26px;height:26px;border-radius:99px;background:var(--accent);color:#fff;display:grid;place-items:center;flex:0 0 26px;font-size:13px}
 .answer p{font-size:13px;line-height:1.6;color:var(--ink-2)}
-.ghost:disabled{opacity:.45;cursor:default}
-.ghost.solid{background:var(--ink);border-color:var(--ink);color:#fff}
-.ghost.solid:hover{background:var(--ink-2);color:#fff}
-/* Fixing a transcript in place. The editor replaces the text, so the row keeps
-   its shape and nothing else on the page moves. */
-.tfix{color:var(--accent-deep);font-weight:500}
-.tedit{
-  display:block;width:100%;max-width:94ch;min-height:74px;resize:vertical;
-  font:inherit;font-size:13.5px;line-height:1.62;color:var(--ink);
-  background:var(--card-2);border:1px solid var(--line);border-radius:8px;padding:9px 11px;
-}
-.tedit:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
-.tedit-bar{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
-.tedit-bar .hint{font-size:11.5px;color:var(--faint);margin-left:4px}
-.tedit-bar .err{font-size:11.5px;color:var(--accent-deep);margin-left:4px}
-.torig{font-size:12px;line-height:1.55;color:var(--faint);max-width:94ch;margin-top:8px;display:none}
-.torig b{color:var(--muted);font-weight:500}
-.trow.open .torig{display:block}
-/* Snippets editor: trigger, text, remove — one row each. */
-.snip{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr) auto;gap:8px;align-items:start;margin-bottom:8px}
-.snip input,.snip textarea{
-  font:inherit;font-size:13px;color:var(--ink);background:var(--card-2);
-  border:1px solid var(--line);border-radius:8px;padding:7px 10px;min-width:0;
-}
-.snip textarea{min-height:36px;resize:vertical;line-height:1.5}
-.snip input:focus,.snip textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
 .answer p b{font-weight:600;color:var(--ink)}
 
 .mcard{padding:20px 22px;display:grid;grid-template-columns:1fr 232px;gap:26px;align-items:center;margin-bottom:12px;position:relative}
@@ -698,10 +728,10 @@
 .ob-body p{font-size:14px;color:var(--muted);line-height:1.62;max-width:58ch}
 .ob-body p b{color:var(--ink);font-weight:500}
 .ob-sub{margin-top:12px;font-size:13px !important;color:var(--faint) !important}
-.ob-mark{width:64px;height:64px;border-radius:20px;background:var(--accent);display:grid;
-  place-items:center;margin-bottom:22px;box-shadow:0 10px 26px -10px rgba(217,113,63,.75)}
+.ob-mark{width:64px;height:64px;border-radius:20px;background:var(--mark-chip);display:grid;
+  place-items:center;margin-bottom:22px;box-shadow:0 10px 26px -10px var(--mark-glow)}
 .ob-mark svg{width:36px;height:auto}
-.ob-mark rect{fill:#fff}
+.ob-mark rect{fill:var(--mark-chip-ink)}
 .ob-input{margin-top:20px;width:100%;max-width:380px;font-size:20px;font-family:'Fraunces',serif;
   padding:12px 16px;border-radius:12px;border:1.5px solid var(--line);background:var(--card-2);
   color:var(--ink);outline:0;transition:.25s var(--ease-soft)}
@@ -729,7 +759,7 @@
   transition:.4s var(--ease)}
 .ob-listen.heard{background:linear-gradient(150deg,#FDF3ED,#FAE7DA);border-color:rgba(217,113,63,.28)}
 .ob-listen svg{width:52px;height:auto;flex:0 0 52px}
-.ob-listen rect{fill:var(--ink)}
+.ob-listen rect{fill:var(--mark)}
 .ob-listen.heard rect{fill:var(--accent)}
 .ob-listen span{font-size:13.5px;color:var(--muted);line-height:1.5}
 .ob-foot{grid-column:2;display:flex;align-items:center;justify-content:space-between;

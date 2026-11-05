@@ -40,6 +40,11 @@ The mass centroid lands at 50.9% of the width, so the mark needs no
 horizontal optical correction — only a small vertical one (see
 MARK_OPTICAL_LIFT).
 
+The mark is raspberry (#BC2C61, `MARK`) on the cream tile. It was warm
+ink until Sept 2026; the silhouette did not change with it, which is why
+that recolour touched no geometry and no test. The menu-bar asset stays
+black — see the palette block.
+
 This replaced a 5:1 version of the same six-column mark. Anything that
 hard-codes the old aspect is a bug: `say/brand.py`, `say/menubar_icon.py`
 and `say/tests/test_brand_assets.py` all carry it explicitly.
@@ -61,9 +66,15 @@ import tempfile
 from PIL import Image, ImageDraw
 
 # ── Palette (desktop/tailwind.config.js is the source of truth) ────
-INK        = (20, 20, 19)      # #141413  warm near-black — the mark
+# The mark is raspberry; the furniture around it stays warm neutral. Two
+# renderers deliberately do NOT take MARK and must not be "tidied" into it:
+# `write_menubar_pdf` and the menu-bar PNG emit pure black, because macOS
+# treats those as *template* images and tints them to match the bar — a
+# coloured template would have to opt out of that and stop adapting.
+MARK       = (188, 44, 97)     # #BC2C61  raspberry — the mark itself
+INK        = (20, 20, 19)      # #141413  warm near-black — tile hairline
 BOOK_CLOTH = (250, 249, 245)   # #faf9f5  cream canvas — the tile
-EDGE       = (20, 20, 19, 38)  # ink hairline around the tile
+EDGE       = (*INK, 38)        # ink hairline around the tile
 
 # ── The mark, on a 30 x 12 unit grid ───────────────────────────────
 # (width, height) per column, left to right. Widths are not uniform — see
@@ -287,7 +298,7 @@ def render_icon(px: int) -> Image.Image:
         mark_w = 2 * half * MARK_WIDTH_RATIO
         mark_h = mark_w * MARK_H / MARK_W
         baseline = c + mark_h / 2.0 - mark_h * MARK_OPTICAL_LIFT
-        d.polygon(_place_mark(mark_w, c - mark_w / 2.0, baseline), fill=INK + (255,))
+        d.polygon(_place_mark(mark_w, c - mark_w / 2.0, baseline), fill=MARK + (255,))
 
     out = img.resize((px, px), Image.BOX)
     if not crisp:
@@ -304,12 +315,12 @@ def render_icon(px: int) -> Image.Image:
     od = ImageDraw.Draw(out)
     for x0, y0, x1, y1 in snapped_mark_rects(w_px, h_px):
         od.rectangle([left + x0, top + y0, left + x1 - 1, top + y1 - 1],
-                     fill=INK + (255,))
+                     fill=MARK + (255,))
     return out
 
 
 def render_mark(width_px: int, pad_ratio: float = 0.0,
-                color: tuple[int, int, int] = INK) -> Image.Image:
+                color: tuple[int, int, int] = MARK) -> Image.Image:
     """The bare mark on transparency, at its true 5:2 aspect."""
     W = width_px * SS
     pad = W * pad_ratio
@@ -330,7 +341,7 @@ def render_ios(px: int) -> Image.Image:
     mark_h = mark_w * MARK_H / MARK_W
     baseline = S / 2.0 + mark_h / 2.0 - mark_h * MARK_OPTICAL_LIFT
     ImageDraw.Draw(img).polygon(
-        _place_mark(mark_w, (S - mark_w) / 2.0, baseline), fill=INK
+        _place_mark(mark_w, (S - mark_w) / 2.0, baseline), fill=MARK
     )
     return img.resize((px, px), Image.BOX)
 
@@ -343,7 +354,7 @@ def render_adaptive_foreground(px: int) -> Image.Image:
     mark_h = mark_w * MARK_H / MARK_W
     baseline = S / 2.0 + mark_h / 2.0 - mark_h * MARK_OPTICAL_LIFT
     ImageDraw.Draw(img).polygon(
-        _place_mark(mark_w, (S - mark_w) / 2.0, baseline), fill=INK + (255,)
+        _place_mark(mark_w, (S - mark_w) / 2.0, baseline), fill=MARK + (255,)
     )
     return img.resize((px, px), Image.BOX)
 
@@ -357,7 +368,7 @@ def render_round(px: int) -> Image.Image:
     mark_w = S * MARK_WIDTH_RATIO * TILE_RATIO
     mark_h = mark_w * MARK_H / MARK_W
     baseline = S / 2.0 + mark_h / 2.0 - mark_h * MARK_OPTICAL_LIFT
-    d.polygon(_place_mark(mark_w, (S - mark_w) / 2.0, baseline), fill=INK + (255,))
+    d.polygon(_place_mark(mark_w, (S - mark_w) / 2.0, baseline), fill=MARK + (255,))
     return img.resize((px, px), Image.BOX)
 
 

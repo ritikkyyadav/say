@@ -113,3 +113,40 @@ jobs:
             --ignore=say/tests/test_overlay_contrast.py \
             --ignore=say/tests/test_overlay_window.py \
             --ignore=say/tests/test_text_inject.py
+
+  android:
+    # The Android keyboard: the ported engine modules under JUnit on the JVM,
+    # then a debug APK with the bundled model. The 51 MB model download is what
+    # `make models` does locally; without it the APK builds but cannot dictate.
+    name: Android (unit tests + debug APK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Bundled model
+        working-directory: android
+        run: make models
+
+      - name: Unit tests
+        working-directory: android
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Debug APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Keep the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: say-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
