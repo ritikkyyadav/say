@@ -1,0 +1,25 @@
+[versions]
+# AGP 8.13 + Gradle 8.13 is the pairing the Moonshine Android sample ships with
+# (android-Transcriber.tar.gz on the moonshine-ai/moonshine v0.1.5 release), so
+# it is known to resolve the AAR cleanly. Kotlin 2.2 is the current stable line
+# compatible with that AGP.
+agp = "8.13.2"
+kotlin = "2.2.21"
+appcompat = "1.7.1"
+material = "1.14.0"
+# The same Moonshine runtime the Mac engine uses (pip `moonshine-voice`), as
+# the official Android library: libmoonshine + libonnxruntime for arm64, MIT.
+# 0.1.x adds setKeyterms(), which is what makes the dictionary bias the decoder
+# here — something the Mac's 0.0.62 pin cannot do with Moonshine yet.
+moonshineVoice = "0.1.5"
+junit = "4.13.2"
+
+[libraries]
+appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+moonshine-voice = { group = "ai.moonshine", name = "moonshine-voice", version.ref = "moonshineVoice" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }

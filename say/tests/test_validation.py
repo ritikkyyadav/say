@@ -16,6 +16,11 @@ def make_config(**overrides):
         'MIN_AUDIO_SECONDS': 0.4,
         'LANGUAGE': 'en',
         'SHOW_NOTIFICATIONS': True,
+        'SAVE_RECORDINGS': False,
+        'RECORDINGS_RETENTION_MODE': 'keep_all',
+        'VALID_RETENTION_MODES': {'keep_all', 'days', 'size'},
+        'RECORDINGS_RETENTION_DAYS': 30,
+        'RECORDINGS_MAX_BYTES': 2 * 1024 * 1024 * 1024,
     }
     values.update(overrides)
     return types.SimpleNamespace(**values)
@@ -38,6 +43,10 @@ class ConfigValidationTests(unittest.TestCase):
             make_config(MIN_AUDIO_SECONDS=60, MAX_RECORDING_SECONDS=60)
         )
         self.assertTrue(any('MIN_AUDIO_SECONDS' in error for error in errors))
+
+    def test_invalid_retention_mode_is_reported(self):
+        errors = validate_config(make_config(RECORDINGS_RETENTION_MODE='forever'))
+        self.assertTrue(any('RECORDINGS_RETENTION_MODE' in error for error in errors))
 
 
 if __name__ == '__main__':

@@ -8,25 +8,37 @@ directory:
   Windows  %APPDATA%/Say/transcripts.db
   Linux    ~/.local/share/Say/transcripts.db   (development only)
 
-No audio is ever written. Only the transcribed text and a small set of
-metrics. The store is completely local — never uploaded, never read by
-anything outside the user's machine.
+By default no audio is written — only the transcribed text and a small
+set of metrics. When the user opts into saving recordings (see
+`recordings.py` / `config.SAVE_RECORDINGS`), each row's `audio_path`
+points at the on-disk WAV for that dictation. The store is completely
+local — never uploaded, never read by anything outside the user's machine.
 """
 
 from __future__ import annotations
 
 import os
-import platform
 import sqlite3
 import sys
 import threading
-from collections import Counter, defaultdict
-from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+# Rows as the API returns them. Named at module level because inside the
+# class body `list` is the `TranscriptStore.list` method, and an annotation
+# written after that definition would resolve to it.
+_Rows = list[dict[str, Any]]
+
+# Only completed, attributable observations belong in the correction-rate
+# denominator. Rewrites and deletions are measured, but not clean insertions.
+_SCOREABLE_OUTCOMES = ('clean', 'corrected', 'continuation', 'formatting_only')
+_OBSERVATION_OUTCOMES = frozenset({
+    *_SCOREABLE_OUTCOMES, 'rewrite', 'deleted', 'unreadable', 'unlocatable',
+    'ambiguous', 'disabled', 'dropped', 'unarmed',
+})
+_MEASURED_OUTCOMES = frozenset({*_SCOREABLE_OUTCOMES, 'rewrite', 'deleted'})
 
 # ── Path resolution ─────────────────────────────────────────────────────────
 
@@ -39,7 +51,7 @@ def _app_data_dir() -> Path:
     minimal install.
     """
     try:
-        from platformdirs import user_data_dir  # type: ignore
+        from platformdirs import user_data_dir
 
         return Path(user_data_dir('Say', appauthor=False))
     except Exception:
@@ -67,7 +79,7 @@ def get_frontmost_app() -> str | None:
     if sys.platform != 'darwin':
         return None
     try:
-        from AppKit import NSWorkspace  # type: ignore
+        from AppKit import NSWorkspace
 
         ws = NSWorkspace.sharedWorkspace()
         app = ws.frontmostApplication()
@@ -95,9 +107,29 @@ CREATE TABLE IF NOT EXISTS transcripts (
     model TEXT NOT NULL,
     inject_method TEXT NOT NULL,
     target_app TEXT,
-    success INTEGER NOT NULL
+    success INTEGER NOT NULL,
+    audio_path TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ts ON transcripts(ts_utc);
+
+-- What the user changed after Say typed for them. One row per *observed*
+-- correction; insertions nobody touched deliberately leave no row, so any
+-- rate computed here needs the insertion count as its denominator (see
+-- `correction_summary`). Only the span Say produced and what it became are
+-- stored — never the surrounding document. See corrections.py / readback.py.
+CREATE TABLE IF NOT EXISTS corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transcript_id INTEGER NOT NULL,
+    ts_utc TEXT NOT NULL,
+    source TEXT NOT NULL,          -- 'observed' (read-back) | 'manual' (in-app edit)
+    inserted TEXT NOT NULL,        -- what Say typed
+    corrected TEXT NOT NULL,       -- what it became
+    edit_distance INTEGER NOT NULL,-- word-level distance between the two
+    words INTEGER NOT NULL,        -- word count of `inserted` — the denominator
+    target_app TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_corr_ts ON corrections(ts_utc);
+CREATE INDEX IF NOT EXISTS idx_corr_transcript ON corrections(transcript_id);
 """
 
 
@@ -161,7 +193,34 @@ class TranscriptStore:
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Apply additive schema migrations to pre-existing databases.
+
+        SQLite has no `ADD COLUMN IF NOT EXISTS`, so we inspect the table
+        and add any missing columns. Safe to run on every startup.
+        """
+        cols = {r['name'] for r in self._conn.execute('PRAGMA table_info(transcripts)')}
+        if 'audio_path' not in cols:
+            self._conn.execute('ALTER TABLE transcripts ADD COLUMN audio_path TEXT')
+        if 'observed' not in cols:
+            # Older insertions were never measured. Do not backfill a clean outcome.
+            self._conn.execute(
+                'ALTER TABLE transcripts ADD COLUMN observed INTEGER NOT NULL DEFAULT 0'
+            )
+        for name, kind in (
+            ('observation_status', 'TEXT'),
+            ('observation_ts_utc', 'TEXT'),
+            ('raw_asr', 'TEXT'),
+            ('pipeline_hash', 'TEXT'),
+            ('pipeline_version', 'TEXT'),
+            ('model_backend', 'TEXT'),
+            ('language', 'TEXT'),
+        ):
+            if name not in cols:
+                self._conn.execute(f'ALTER TABLE transcripts ADD COLUMN {name} {kind}')
 
     def close(self) -> None:
         with self._lock:
@@ -183,6 +242,12 @@ class TranscriptStore:
         target_app: str | None,
         success: bool = True,
         ts_utc: str | None = None,
+        raw_asr: str | None = None,
+        pipeline_hash: str | None = None,
+        pipeline_version: str | None = None,
+        model_backend: str | None = None,
+        language: str | None = None,
+        observation_status: str | None = None,
     ) -> int:
         ts = ts_utc or datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z')
         wc = _word_count(text)
@@ -191,8 +256,10 @@ class TranscriptStore:
                 """
                 INSERT INTO transcripts
                   (ts_utc, text, word_count, audio_seconds, inference_seconds,
-                   model, inject_method, target_app, success)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   model, inject_method, target_app, success, raw_asr,
+                   pipeline_hash, pipeline_version, model_backend, language,
+                   observation_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ts,
@@ -204,12 +271,389 @@ class TranscriptStore:
                     inject_method,
                     target_app,
                     1 if success else 0,
+                    raw_asr,
+                    pipeline_hash,
+                    pipeline_version,
+                    model_backend,
+                    language,
+                    observation_status,
                 ),
             )
             self._conn.commit()
             return int(cur.lastrowid or 0)
 
+    def set_outcome(
+        self, transcript_id: int, *, success: bool, inject_method: str
+    ) -> None:
+        """Record how a transcript's insertion actually went.
+
+        The controller writes the row *before* attempting injection, so the
+        user's words survive even when delivery fails. This closes the loop
+        once the outcome is known.
+        """
+        with self._lock:
+            self._conn.execute(
+                '''UPDATE transcripts
+                   SET success = ?, inject_method = ?,
+                       observation_status = CASE
+                           WHEN ? = 0 AND observation_status = 'pending'
+                           THEN 'not_applicable' ELSE observation_status END
+                   WHERE id = ?''',
+                (1 if success else 0, inject_method, 1 if success else 0, int(transcript_id)),
+            )
+            self._conn.commit()
+
+    def set_audio_path(self, transcript_id: int, audio_path: str) -> None:
+        """Link a saved WAV to its transcript row."""
+        with self._lock:
+            self._conn.execute(
+                'UPDATE transcripts SET audio_path = ? WHERE id = ?',
+                (audio_path, int(transcript_id)),
+            )
+            self._conn.commit()
+
+    def clear_audio_path(self, transcript_id: int) -> None:
+        """Forget a recording (row stays; only the audio link is removed)."""
+        with self._lock:
+            self._conn.execute(
+                'UPDATE transcripts SET audio_path = NULL WHERE id = ?',
+                (int(transcript_id),),
+            )
+            self._conn.commit()
+
+    # -- Corrections --------------------------------------------------------
+
+    def record_correction(
+        self,
+        *,
+        transcript_id: int,
+        source: str,
+        inserted: str,
+        corrected: str,
+        edit_distance: int,
+        words: int,
+        target_app: str | None = None,
+        ts_utc: str | None = None,
+    ) -> int:
+        """Persist one observed correction.
+
+        Callers must have already run the diff through
+        `corrections.looks_like_correction()`. This method stores what it is
+        given — the judgement about whether an edit *is* a correction belongs
+        in one place, and that place is the pure module.
+        """
+        ts = ts_utc or datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z')
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO corrections
+                  (transcript_id, ts_utc, source, inserted, corrected,
+                   edit_distance, words, target_app)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(transcript_id),
+                    ts,
+                    source,
+                    inserted,
+                    corrected,
+                    int(edit_distance),
+                    int(words),
+                    target_app,
+                ),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def finish_observation(
+        self, transcript_id: int, outcome: str, *,
+        inserted: str | None = None, corrected: str | None = None,
+        edit_distance: int | None = None, words: int | None = None,
+        target_app: str | None = None,
+    ) -> None:
+        """Store one classified read-back, and its correction, in one transaction.
+
+        A rejected rewrite/deletion is measurable but never scores as clean.
+        No document anchors or discarded edited text enter this table.
+        """
+        if outcome not in _OBSERVATION_OUTCOMES:
+            raise ValueError(f'Unknown observation outcome: {outcome}')
+        if outcome == 'corrected' and (
+            inserted is None or corrected is None or edit_distance is None or words is None
+        ):
+            raise ValueError('A corrected observation needs its diff')
+        ts = datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z')
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute(
+                    '''UPDATE transcripts SET observation_status = ?, observation_ts_utc = ?,
+                       observed = ? WHERE id = ? AND observation_status = 'pending' ''',
+                    (outcome, ts, int(outcome in _MEASURED_OUTCOMES), int(transcript_id)),
+                )
+                if cur.rowcount != 1:
+                    return
+                if outcome == 'corrected':
+                    assert edit_distance is not None and words is not None
+                    self._conn.execute(
+                        '''INSERT INTO corrections
+                           (transcript_id, ts_utc, source, inserted, corrected,
+                            edit_distance, words, target_app)
+                           VALUES (?, ?, 'observed', ?, ?, ?, ?, ?)''',
+                        (int(transcript_id), ts, inserted, corrected,
+                         int(edit_distance), int(words), target_app),
+                    )
+
+    def mark_observed(self, transcript_id: int) -> None:
+        """Record that the read-back actually compared this insertion.
+
+        Called when the span was relocated and diffed — clean or not. An
+        insertion we could not read back is *unmeasured*, not perfect, and
+        must stay out of the denominator.
+        """
+        with self._lock:
+            self._conn.execute(
+                'UPDATE transcripts SET observed = 1 WHERE id = ?',
+                (int(transcript_id),),
+            )
+            self._conn.commit()
+
+    # -- Manual corrections: the user's own version, written from the app --
+
+    def set_manual_correction(
+        self, transcript_id: int, corrected: str
+    ) -> dict[str, Any] | None:
+        """Store the user's version of a transcript. None if the id is unknown.
+
+        One per transcript: saving again replaces the earlier one. The
+        transcript's own text is never rewritten — what Say produced is the
+        evidence, and the pair is what the benchmark and the vocabulary
+        suggestions are built from. Saving the text unchanged is meaningful
+        too: it records that someone checked this one and it was right.
+        """
+        from corrections import tokenize, word_errors
+
+        ts = datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z')
+        with self._lock:
+            row = self._conn.execute(
+                'SELECT text, target_app FROM transcripts WHERE id = ?', (int(transcript_id),)
+            ).fetchone()
+            if row is None:
+                return None
+            errors, _ = word_errors(corrected, row['text'])
+            with self._conn:
+                self._conn.execute(
+                    "DELETE FROM corrections WHERE transcript_id = ? AND source = 'manual'",
+                    (int(transcript_id),),
+                )
+                cur = self._conn.execute(
+                    '''INSERT INTO corrections
+                       (transcript_id, ts_utc, source, inserted, corrected,
+                        edit_distance, words, target_app)
+                       VALUES (?, ?, 'manual', ?, ?, ?, ?, ?)''',
+                    (int(transcript_id), ts, row['text'], corrected, int(errors),
+                     len(tokenize(row['text'])), row['target_app']),
+                )
+            saved = self._conn.execute(
+                'SELECT * FROM corrections WHERE id = ?', (int(cur.lastrowid or 0),)
+            ).fetchone()
+        return dict(saved) if saved is not None else None
+
+    def clear_manual_correction(self, transcript_id: int) -> bool:
+        """Remove the user's version of a transcript. True if there was one."""
+        with self._lock:
+            with self._conn:
+                cur = self._conn.execute(
+                    "DELETE FROM corrections WHERE transcript_id = ? AND source = 'manual'",
+                    (int(transcript_id),),
+                )
+            return cur.rowcount > 0
+
+    def manual_corrections(self) -> dict[int, str]:
+        """`transcript_id -> the user's version`, for every transcript that has one."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT transcript_id, corrected FROM corrections WHERE source = 'manual'"
+            ).fetchall()
+        return {int(r['transcript_id']): r['corrected'] for r in rows}
+
+    def review_summary(self) -> dict[str, Any]:
+        """What the user's own corrections say, kept apart from the read-back rate.
+
+        These clips are chosen for review *because* they look wrong, so their
+        error rate describes the reviewed clips and nothing else. Folding it
+        into `correction_summary()` would report a selected sample as the
+        whole.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT edit_distance, words FROM corrections WHERE source = 'manual'"
+            ).fetchall()
+        words = sum(int(r['words']) for r in rows)
+        edited = sum(int(r['edit_distance']) for r in rows)
+        return {
+            'reviewed': len(rows),
+            'confirmed_right': sum(1 for r in rows if int(r['edit_distance']) == 0),
+            'words': words,
+            'edited_words': edited,
+            'word_rate': round(edited / words, 4) if words else 0.0,
+        }
+
+    def corrections(
+        self, *, limit: int | None = 200, since: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Correction rows, newest first. `since` is an ISO timestamp bound."""
+        sql = 'SELECT * FROM corrections'
+        params: list[Any] = []
+        if since:
+            sql += ' WHERE ts_utc >= ?'
+            params.append(since)
+        sql += ' ORDER BY ts_utc DESC'
+        if limit is not None:
+            sql += ' LIMIT ?'
+            params.append(max(1, int(limit)))
+        with self._lock:
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+    def correction_summary(self, *, days: int = 30, today: date | None = None) -> dict[str, Any]:
+        """Correction rate over a window.
+
+        The denominator is every *successful insertion* in the window, not the
+        number of correction rows — the dictations the user never had to touch
+        are the whole point of the metric and they leave no row behind.
+        """
+        today = today or datetime.now(UTC).date()
+        cutoff = (
+            datetime.combine(today, datetime.min.time()) - timedelta(days=max(1, int(days)))
+        ).isoformat() + 'Z'
+        with self._lock:
+            # Legacy observed rows have no classification and retain their
+            # original meaning. New rewrites/deletions are not clean scores.
+            insertions = int(self._conn.execute(
+                '''SELECT COUNT(*) AS n FROM transcripts
+                   WHERE success = 1 AND observed = 1 AND ts_utc >= ?
+                     AND (observation_status IS NULL OR observation_status IN
+                          ('clean', 'corrected', 'continuation', 'formatting_only'))''',
+                (cutoff,),
+            ).fetchone()['n'])
+            # Every successful insertion in the window, measured or not. The
+            # gap between this and `insertions` is coverage: how much of what
+            # we typed we were actually able to check.
+            inserted_total = int(self._conn.execute(
+                'SELECT COUNT(*) AS n FROM transcripts WHERE success = 1 AND ts_utc >= ?',
+                (cutoff,),
+            ).fetchone()['n'])
+            rows = self._conn.execute(
+                '''SELECT c.inserted, c.corrected FROM corrections c
+                   JOIN transcripts t ON t.id = c.transcript_id
+                   WHERE c.source = 'observed'
+                     AND t.success = 1 AND t.observed = 1 AND t.ts_utc >= ?
+                     AND (t.observation_status IS NULL OR t.observation_status = 'corrected')''',
+                (cutoff,),
+            ).fetchall()
+
+        from corrections import diff, looks_like_correction, summarise
+
+        # Score stored rows under today's rules, not the ones they were
+        # recorded under. The ledger keeps what was observed; a row an older
+        # diff mistook for a correction must not go on inflating the rate.
+        scored = []
+        for r in rows:
+            d = diff(r['inserted'], r['corrected'])
+            if looks_like_correction(d):
+                scored.append({'words': d.words, 'edit_distance': d.distance})
+
+        rate = summarise(scored, insertions=insertions)
+        return {
+            'insertions': rate.insertions,
+            'inserted_total': inserted_total,
+            'corrected': rate.corrected,
+            'words': rate.words,
+            'edited_words': rate.edited_words,
+            'touch_rate': round(rate.touch_rate, 4),
+            'word_rate': round(rate.word_rate, 4),
+            'coverage': self.observation_summary(days=days, today=today),
+            'review': self.review_summary(),
+        }
+
+    def observation_summary(self, *, days: int = 30, today: date | None = None) -> dict[str, Any]:
+        """Coverage and classified outcomes for successful insertions (not accuracy)."""
+        today = today or datetime.now(UTC).date()
+        cutoff = (
+            datetime.combine(today, datetime.min.time()) - timedelta(days=max(1, int(days)))
+        ).isoformat() + 'Z'
+        with self._lock:
+            rows = self._conn.execute(
+                '''SELECT target_app, observation_status, observed FROM transcripts
+                   WHERE success = 1 AND ts_utc >= ?''', (cutoff,),
+            ).fetchall()
+        outcomes: dict[str, int] = {}
+        apps: dict[str, dict[str, int]] = {}
+        for row in rows:
+            status = row['observation_status'] or (
+                'legacy_observed' if row['observed'] else 'unknown_historical'
+            )
+            outcomes[status] = outcomes.get(status, 0) + 1
+            app = row['target_app'] or 'Unknown'
+            counts = apps.setdefault(app, {'successful': 0, 'measured': 0, 'scoreable': 0})
+            counts['successful'] += 1
+            if status in _MEASURED_OUTCOMES or status == 'legacy_observed':
+                counts['measured'] += 1
+            if status in _SCOREABLE_OUTCOMES or status == 'legacy_observed':
+                counts['scoreable'] += 1
+        measured = sum(v['measured'] for v in apps.values())
+        return {
+            'successful': len(rows),
+            'measured': measured,
+            'coverage_rate': round(measured / len(rows), 4) if rows else 0.0,
+            'outcomes': outcomes,
+            'by_app': apps,
+        }
+
+    def audio_path_for(self, transcript_id: int) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                'SELECT audio_path FROM transcripts WHERE id = ?',
+                (int(transcript_id),),
+            ).fetchone()
+        return row['audio_path'] if row and row['audio_path'] else None
+
     # -- Reads --------------------------------------------------------------
+
+    def recordings(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+        """Return rows that have a saved recording, newest first.
+
+        Includes the full metadata needed by the Recordings tab and by the
+        ZIP export manifest. `limit=None` returns every recording (used for
+        export + retention sweeps).
+        """
+        sql = (
+            'SELECT id, ts_utc, text, word_count, audio_seconds, inference_seconds, '
+            'model, inject_method, target_app, success, audio_path '
+            'FROM transcripts WHERE audio_path IS NOT NULL ORDER BY ts_utc DESC'
+        )
+        params: tuple[Any, ...] = ()
+        if limit is not None:
+            sql += ' LIMIT ?'
+            params = (max(1, int(limit)),)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [
+            {
+                'id': r['id'],
+                'ts_utc': r['ts_utc'],
+                'text': r['text'],
+                'word_count': r['word_count'],
+                'audio_seconds': r['audio_seconds'],
+                'inference_seconds': r['inference_seconds'],
+                'model': r['model'],
+                'inject_method': r['inject_method'],
+                'target_app': r['target_app'],
+                'success': bool(r['success']),
+                'audio_path': r['audio_path'],
+            }
+            for r in rows
+        ]
 
     def list(self, limit: int = 200, before: str | None = None) -> list[Transcript]:
         """Return transcripts in reverse-chronological order."""
@@ -298,17 +742,24 @@ class TranscriptStore:
             streak += 1
             cursor -= timedelta(days=1)
 
+        corr = self.correction_summary(days=30, today=today)
+
         return {
             'total_words': int(total),
             'wpm_30d': round(wpm_30d, 1),
             'streak_days': streak,
-            'fixes_count': 0,  # TODO: engine doesn't emit corrections yet.
+            'fixes_count': corr['corrected'],
+            'insertions_30d': corr['insertions'],
+            'correction_rate': corr['touch_rate'],
+            'correction_word_rate': corr['word_rate'],
+            'correction_coverage_rate': corr['coverage']['coverage_rate'],
+            'correction_outcomes_30d': corr['coverage']['outcomes'],
             'words_this_month': words_30,
             'words_prev_month': words_prev,
             'transcript_count': self.count(),
         }
 
-    def desktop_usage(self, *, days: int = 30, today: date | None = None) -> list[dict[str, Any]]:
+    def desktop_usage(self, *, days: int = 30, today: date | None = None) -> _Rows:
         """Per-app usage rollup over the last `days` days, sorted by count desc."""
         today = today or datetime.now(UTC).date()
         cutoff = (datetime.combine(today, datetime.min.time()) - timedelta(days=days)).isoformat() + 'Z'
@@ -334,7 +785,7 @@ class TranscriptStore:
             for r in rows
         ]
 
-    def heatmap(self, *, days: int = 180, today: date | None = None) -> list[dict[str, Any]]:
+    def heatmap(self, *, days: int = 180, today: date | None = None) -> _Rows:
         """Per-day transcript counts for the last `days` days. Includes zeros."""
         today = today or datetime.now(UTC).date()
         start = today - timedelta(days=days - 1)

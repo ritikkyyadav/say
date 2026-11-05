@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="say_canvas">#141413</color>
+    <color name="say_surface">#1E1E1C</color>
+    <color name="say_ink">#F5F4EE</color>
+    <color name="say_ink_secondary">#B0AEA5</color>
+    <color name="say_hairline">#2E2E2B</color>
+    <color name="say_accent">#D97757</color>
+    <color name="say_panel">#1A1A18</color>
+</resources>

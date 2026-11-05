@@ -1,0 +1,19 @@
+# Gradle / IDE
+.gradle/
+build/
+.kotlin/
+.idea/
+*.iml
+local.properties
+captures/
+
+# The bundled model is downloaded by `make models` (see Makefile), never
+# committed: 50 MB of .ort files have no business in git history.
+app/src/main/assets/models/
+
+# Built APKs staged for copying onto a phone.
+dist/
+
+# Local signing key. Like the Mac's "Say Local Signing" identity it exists so
+# an install survives rebuilds; it is minted by `make signing-key`.
+keystore/*.jks

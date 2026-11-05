@@ -1,0 +1,376 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/say_canvas"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="@dimen/page_gutter"
+        android:paddingTop="28dp"
+        android:paddingEnd="@dimen/page_gutter"
+        android:paddingBottom="40dp">
+
+        <ImageView
+            android:layout_width="60dp"
+            android:layout_height="24dp"
+            android:contentDescription="@string/app_name"
+            android:src="@drawable/ic_mark" />
+
+        <TextView
+            style="@style/Say.Text.Title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="@string/app_name"
+            android:textSize="30sp" />
+
+        <TextView
+            style="@style/Say.Text.Body"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/home_tagline"
+            android:textColor="@color/say_ink_secondary" />
+
+        <!-- What the engine is doing right now. Errors land here in red. -->
+        <TextView
+            android:id="@+id/engine_status"
+            style="@style/Say.Text.Secondary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/status_loading" />
+
+        <!-- Try it: dictate into this field from the app itself, no keyboard switching needed. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/bg_surface"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <EditText
+                android:id="@+id/try_field"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@null"
+                android:hint="@string/try_hint"
+                android:importantForAutofill="no"
+                android:inputType="textMultiLine|textCapSentences"
+                android:minLines="2"
+                android:textColor="@color/say_ink"
+                android:textColorHint="@color/cloud_mid"
+                android:textSize="17sp" />
+
+            <com.ritikyadav.say.glyph.GlyphView
+                android:id="@+id/glyph"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btn_dictate"
+                    style="@style/Widget.Material3.Button"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="128dp"
+                    android:text="@string/dictate" />
+
+                <Button
+                    android:id="@+id/btn_switch"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/switch_keyboard" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- How to use it, with each step's state. Stays on screen; the steps
+             are where a stuck user looks first. -->
+        <LinearLayout
+            android:id="@+id/setup_card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_surface"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                style="@style/Say.Text.Kicker"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/how_title" />
+
+            <LinearLayout
+                android:id="@+id/setup_rows"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="vertical" />
+        </LinearLayout>
+
+        <!-- Say anywhere: the floating mark over other apps. -->
+        <LinearLayout
+            android:id="@+id/bubble_card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_surface"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                style="@style/Say.Text.Kicker"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/bubble_title" />
+
+            <TextView
+                style="@style/Say.Text.Body"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="@string/bubble_blurb" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/bubble_dot"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="10dp"
+                    android:text="●"
+                    android:textColor="@color/cloud_mid" />
+
+                <TextView
+                    android:id="@+id/bubble_status"
+                    style="@style/Say.Text.Body"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/bubble_off" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btn_bubble"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="22dp"
+                android:layout_marginTop="2dp"
+                android:text="@string/bubble_action" />
+
+            <TextView
+                style="@style/Say.Text.Secondary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/bubble_privacy" />
+        </LinearLayout>
+
+        <!-- KPIs -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="26dp"
+            android:orientation="horizontal">
+
+            <include
+                android:id="@+id/kpi_words"
+                layout="@layout/kpi"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
+
+            <include
+                android:id="@+id/kpi_wpm"
+                layout="@layout/kpi"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
+
+            <include
+                android:id="@+id/kpi_streak"
+                layout="@layout/kpi"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
+        </LinearLayout>
+
+        <!-- Transcripts -->
+        <TextView
+            style="@style/Say.Text.Kicker"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="30dp"
+            android:text="@string/transcripts_title" />
+
+        <TextView
+            android:id="@+id/transcripts_empty"
+            style="@style/Say.Text.Secondary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/transcripts_empty" />
+
+        <LinearLayout
+            android:id="@+id/transcripts"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="vertical" />
+
+        <!-- Models -->
+        <TextView
+            style="@style/Say.Text.Kicker"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="30dp"
+            android:text="@string/models_title" />
+
+        <TextView
+            style="@style/Say.Text.Secondary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/models_blurb" />
+
+        <LinearLayout
+            android:id="@+id/models"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="vertical" />
+
+        <!-- Settings -->
+        <TextView
+            style="@style/Say.Text.Kicker"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="30dp"
+            android:text="@string/settings_title" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/sw_auto_correct"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/setting_auto_correct" />
+
+        <TextView
+            style="@style/Say.Text.Secondary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/setting_auto_correct_blurb" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/sw_capitalise"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/setting_capitalise" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/sw_punctuation"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/setting_terminal_punctuation" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/sw_return"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/setting_return_to_keyboard" />
+
+        <TextView
+            style="@style/Say.Text.Secondary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/setting_return_to_keyboard_blurb" />
+
+        <TextView
+            style="@style/Say.Text.Body"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="@string/setting_dictionary" />
+
+        <TextView
+            style="@style/Say.Text.Secondary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/setting_dictionary_blurb" />
+
+        <EditText
+            android:id="@+id/dictionary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@color/say_surface"
+            android:gravity="top"
+            android:hint="@string/setting_dictionary_hint"
+            android:importantForAutofill="no"
+            android:inputType="textMultiLine|textNoSuggestions"
+            android:minLines="2"
+            android:padding="12dp"
+            android:textColor="@color/say_ink"
+            android:textColorHint="@color/cloud_mid" />
+
+        <TextView
+            style="@style/Say.Text.Body"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/setting_replacements" />
+
+        <TextView
+            style="@style/Say.Text.Secondary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/setting_replacements_blurb" />
+
+        <EditText
+            android:id="@+id/replacements"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@color/say_surface"
+            android:gravity="top"
+            android:hint="@string/setting_replacements_hint"
+            android:importantForAutofill="no"
+            android:inputType="textMultiLine|textNoSuggestions"
+            android:minLines="2"
+            android:padding="12dp"
+            android:textColor="@color/say_ink"
+            android:textColorHint="@color/cloud_mid" />
+
+        <TextView
+            android:id="@+id/build_stamp"
+            style="@style/Say.Text.Secondary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="26dp"
+            android:gravity="center" />
+    </LinearLayout>
+</ScrollView>

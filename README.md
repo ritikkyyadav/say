@@ -1,14 +1,15 @@
 # Say
 
-Local-first voice dictation for macOS, with a desktop window.
+Local-first voice dictation for macOS, with a desktop window — and for Android, as a keyboard.
 
-Hold the global hotkey, speak, release. Audio is transcribed locally with Whisper on Apple Silicon, the text is injected into the focused app, and the transcript is logged to a SQLite database in your home directory. No cloud, no API keys, no telemetry, no audio files written to disk.
+Hold the global hotkey, speak, release. Audio is transcribed locally on Apple Silicon — the bundled **Moonshine** model by default (small, fast, English, ONNX) with multilingual **Whisper** models a click away in the Models tab — the text is injected into the focused app, and the transcript is logged to a SQLite database in your home directory. No cloud, no API keys, no telemetry; audio stays in memory unless you opt into Recordings (still local).
 
 ## What's in this repo
 
 ```
 ├── say/         — Python dictation engine (menu-bar agent + HTTP API)
 ├── desktop/     — Tauri 2 + React desktop window (Wispr Flow-style UI)
+├── android/     — Say as an Android keyboard (Kotlin; same Moonshine runtime, same engine rules)
 └── pyproject.toml
 ```
 
@@ -20,6 +21,7 @@ The engine is the source of truth for hotkeys, recording, transcription, and tex
 | Dictation pipeline | Python (mlx-whisper) | `say/audio.py`, `say/transcriber.py`, `say/controller.py`, `say/injector.py` |
 | HTTP API + SQLite store | FastAPI + sqlite3 | `say/server/` |
 | Desktop window | Tauri 2 + React + Tailwind | `desktop/` |
+| Android keyboard | Kotlin + Moonshine Voice AAR | `android/` |
 
 ## Quick start (development)
 
@@ -53,7 +55,27 @@ make dmg      # produces Say_0.1.0_aarch64.dmg
 
 The DMG is **unsigned** unless `DEVELOPER_ID` is set. On a fresh Mac, right-click → Open the first time to bypass Gatekeeper. To sign + notarize see `desktop/README.md`.
 
-The bundled `Say.app` contains both the desktop shell and a nested `SayEngine.app` (the PyInstaller-bundled Python engine + the Whisper model). The shell spawns the engine on launch with `--no-menubar` and tears it down on Cmd+Q.
+The bundled `Say.app` contains both the desktop shell and a nested `SayEngine.app` (the PyInstaller-bundled Python engine + the bundled Moonshine model). The shell spawns the engine on launch with `--no-menubar` and tears it down on Cmd+Q.
+
+## Android
+
+Say ships on Android as an **input method** and as a **floating mark**. As a keyboard: pick
+Say in the switcher, speak, tap the mark, and the words land in the field you were in; your
+keyboard comes back on its own. As the floating mark (turn Say on under Accessibility): it
+sits just above whatever keyboard you use, in every app — tap, speak, tap, and the words
+land at your cursor. The model (Moonshine `tiny-streaming-en`, 51 MB) is
+inside the APK, so it works offline from first launch; Small and Medium download once from
+moonshine.ai. The transcript clean-up, silence segmentation and the glyph's motion are the
+Mac engine's modules ported line for line, with their test suites.
+
+```bash
+cd android
+make models && make test && make build     # 51 MB model, 106 JVM tests, debug APK
+make signing-key && make release           # APK signed with a stable local key
+make avd && make emulator && make install  # or a real phone over adb
+```
+
+See `android/README.md`.
 
 ## Two screens, by design
 
@@ -65,8 +87,9 @@ The sidebar has Dictionary, Snippets, Style, Transforms, and Scratchpad rendered
 
 ## Privacy
 
-- Audio is never written to disk.
-- The model runs locally on Apple Silicon via mlx-whisper.
+- Audio stays in memory by default — never written to disk.
+- **Recordings (opt-in):** you can turn on *Save audio receipts* in the Recordings tab to keep a local WAV of each dictation for replay/verify/export. Recordings stay on this Mac and are never uploaded; you control retention (keep all / auto-delete after N days / cap total size) and can export everything to a local `.zip` or delete it at any time.
+- Models run locally on Apple Silicon: Moonshine via OnnxRuntime (bundled default, no torch) or Whisper via mlx-whisper. Switching models never sends a byte off-device.
 - Transcripts live in `~/Library/Application Support/Say/transcripts.db`.
 - Logs (rotated 10 MB × 5) live in `~/Library/Logs/Say/`.
 - The HTTP API binds to `127.0.0.1` on a random port, with a per-launch bearer token in `~/Library/Application Support/Say/runtime.json` (mode `0600`).

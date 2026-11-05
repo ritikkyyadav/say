@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Say" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/say_accent</item>
+        <item name="colorOnPrimary">@color/book_cloth</item>
+        <item name="colorSurface">@color/say_surface</item>
+        <item name="colorOnSurface">@color/say_ink</item>
+        <item name="colorOnSurfaceVariant">@color/say_ink_secondary</item>
+        <item name="colorOutline">@color/say_hairline</item>
+        <item name="android:windowBackground">@color/say_canvas</item>
+        <item name="android:statusBarColor">@color/say_canvas</item>
+        <item name="android:navigationBarColor">@color/say_canvas</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:textColorPrimary">@color/say_ink</item>
+        <item name="android:textColorSecondary">@color/say_ink_secondary</item>
+    </style>
+
+    <style name="Theme.Say.Translucent">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+
+    <style name="Say.Text.Kicker" parent="TextAppearance.Material3.LabelSmall">
+        <item name="android:textColor">@color/say_ink_secondary</item>
+        <item name="android:letterSpacing">0.08</item>
+        <item name="android:textAllCaps">true</item>
+    </style>
+
+    <style name="Say.Text.Title" parent="TextAppearance.Material3.HeadlineSmall">
+        <item name="android:textColor">@color/say_ink</item>
+        <item name="android:fontFamily">serif</item>
+    </style>
+
+    <style name="Say.Text.Body" parent="TextAppearance.Material3.BodyMedium">
+        <item name="android:textColor">@color/say_ink</item>
+    </style>
+
+    <style name="Say.Text.Secondary" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:textColor">@color/say_ink_secondary</item>
+    </style>
+
+    <style name="Say.Card" parent="Widget.Material3.CardView.Outlined">
+        <item name="cardBackgroundColor">@color/say_surface</item>
+        <item name="strokeColor">@color/say_hairline</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="cardCornerRadius">8dp</item>
+        <item name="cardElevation">0dp</item>
+    </style>
+</resources>
