@@ -16,7 +16,6 @@ function TopBar({ crumb }: { crumb: string }) {
   return (
     <div className="topbar">
       <div className="wordmark">
-        <b>Say</b>
         <span>{crumb}</span>
       </div>
     </div>
