@@ -13,7 +13,12 @@ class SingleInstanceTests(unittest.TestCase):
 
         import settings as settings_mod
         importlib.reload(settings_mod)
+        # Every path, not just the directory: the reload reset them all to the
+        # real files, and SETTINGS_FILE left pointing there once let a later
+        # test write into the user's actual settings.json.
         settings_mod.SETTINGS_DIR = self.tmpdir
+        settings_mod.SETTINGS_FILE = os.path.join(self.tmpdir, 'settings.json')
+        settings_mod.FIRST_RUN_MARKER = os.path.join(self.tmpdir, 'first_run_complete')
 
         import single_instance as si
         self.si = importlib.reload(si)

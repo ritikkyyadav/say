@@ -1,9 +1,13 @@
 import { Transcript } from './api';
 
-export type DayGroup = {
+// Anything with a stable id and an ISO timestamp can be grouped by day —
+// transcripts on Home and recordings on the Recordings tab both qualify.
+type Dated = { id: number; ts_utc: string };
+
+export type DayGroup<T extends Dated = Transcript> = {
   label: string;
   isoDate: string; // YYYY-MM-DD in user's local timezone
-  rows: Transcript[];
+  rows: T[];
 };
 
 const MONTHS = [
@@ -28,8 +32,11 @@ function labelFor(iso: string, today: Date): string {
   return `${MONTHS[d.getMonth()].toUpperCase()} ${d.getDate()}, ${d.getFullYear()}`;
 }
 
-export function groupByDay(rows: Transcript[], now: Date = new Date()): DayGroup[] {
-  const buckets = new Map<string, Transcript[]>();
+export function groupByDay<T extends Dated>(
+  rows: T[],
+  now: Date = new Date(),
+): DayGroup<T>[] {
+  const buckets = new Map<string, T[]>();
   for (const r of rows) {
     const local = new Date(r.ts_utc);
     const key = ymd(local);

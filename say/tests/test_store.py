@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import unittest
 from datetime import UTC, date, datetime, timedelta
 from tempfile import TemporaryDirectory
@@ -44,6 +45,93 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(row.inject_method, 'accessibility')
         self.assertTrue(row.success)
         self.assertEqual(self.store.count(), 1)
+
+    def test_new_provenance_is_private_and_observations_finish_once(self):
+        rid = self.store.insert(
+            text='Claude Code.', raw_asr='Cloud code', pipeline_hash='hash123',
+            pipeline_version='code123', model_backend='whisper-mlx', language='en',
+            observation_status='pending', audio_seconds=2, inference_seconds=0.1,
+            model='m', inject_method='pending', target_app='com.app.a', success=False,
+        )
+        self.store.finish_observation(
+            rid, 'corrected', inserted='Claude Code.', corrected='Claude Goat.',
+            edit_distance=1, words=2, target_app='com.app.a',
+        )
+        self.store.finish_observation(rid, 'clean')
+        self.store.set_outcome(rid, success=True, inject_method='accessibility')
+        self.assertEqual(len(self.store.corrections()), 1)
+        self.assertEqual(self.store.correction_summary()['corrected'], 1)
+        self.assertEqual(self.store.observation_summary()['outcomes']['corrected'], 1)
+        row = self.store._conn.execute('SELECT * FROM transcripts WHERE id = ?', (rid,)).fetchone()
+        self.assertEqual(row['raw_asr'], 'Cloud code')
+        self.assertEqual(row['pipeline_hash'], 'hash123')
+        self.assertEqual(row['pipeline_version'], 'code123')
+        self.assertEqual(row['model_backend'], 'whisper-mlx')
+        self.assertIsNotNone(row['observation_ts_utc'])
+        self.assertNotIn('raw_asr', self.store.list()[0].to_dict())
+        self.assertNotIn('pipeline_hash', self.store.list()[0].to_dict())
+
+    def test_failed_correction_write_rolls_back_measured_status(self):
+        rid = self.store.insert(
+            text='a b c', audio_seconds=2, inference_seconds=0.1, model='m',
+            inject_method='accessibility', target_app=None, observation_status='pending',
+        )
+        self.store._conn.execute('''CREATE TRIGGER reject_corrections
+            BEFORE INSERT ON corrections BEGIN SELECT RAISE(ABORT, 'disk failed'); END''')
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.finish_observation(
+                rid, 'corrected', inserted='a b c', corrected='a bee c',
+                edit_distance=1, words=3,
+            )
+        row = self.store._conn.execute(
+            'SELECT observation_status, observed FROM transcripts WHERE id = ?', (rid,)
+        ).fetchone()
+        self.assertEqual(tuple(row), ('pending', 0))
+        self.assertEqual(self.store.corrections(), [])
+
+    def test_rejected_edits_are_measured_but_not_clean(self):
+        rid = self.store.insert(
+            text='a b c d', audio_seconds=2, inference_seconds=0.1, model='m',
+            inject_method='accessibility', target_app='com.app.a',
+            observation_status='pending',
+        )
+        self.store.finish_observation(rid, 'rewrite')
+        summary = self.store.correction_summary()
+        self.assertEqual(summary['coverage']['measured'], 1)
+        self.assertEqual(summary['coverage']['by_app']['com.app.a']['measured'], 1)
+        self.assertEqual(summary['insertions'], 0)
+        self.assertEqual(summary['corrected'], 0)
+
+    def test_legacy_rows_remain_unknown_after_migration(self):
+        legacy_path = os.path.join(self._tmp.name, 'legacy.db')
+        con = sqlite3.connect(legacy_path)
+        con.execute('''CREATE TABLE transcripts (
+            id INTEGER PRIMARY KEY, ts_utc TEXT NOT NULL, text TEXT NOT NULL,
+            word_count INTEGER NOT NULL, audio_seconds REAL NOT NULL,
+            inference_seconds REAL NOT NULL, model TEXT NOT NULL,
+            inject_method TEXT NOT NULL, target_app TEXT, success INTEGER NOT NULL,
+            audio_path TEXT, observed INTEGER NOT NULL DEFAULT 0)''')
+        con.executemany(
+            '''INSERT INTO transcripts (ts_utc, text, word_count, audio_seconds,
+               inference_seconds, model, inject_method, success, observed)
+               VALUES (?, 'old', 1, 1, 0.2, 'm', 'accessibility', 1, ?)''',
+            [(_ts(datetime.now(UTC).date()), 0), (_ts(datetime.now(UTC).date()), 1)],
+        )
+        con.commit()
+        con.close()
+        migrated = TranscriptStore(legacy_path)
+        try:
+            rows = migrated._conn.execute(
+                'SELECT observation_status, raw_asr, pipeline_hash FROM transcripts'
+            ).fetchall()
+            self.assertEqual([tuple(row) for row in rows], [(None, None, None)] * 2)
+            coverage = migrated.observation_summary()
+            self.assertEqual(coverage['outcomes'],
+                             {'unknown_historical': 1, 'legacy_observed': 1})
+            self.assertEqual(coverage['measured'], 1)
+            self.assertEqual(migrated.correction_summary()['insertions'], 1)
+        finally:
+            migrated.close()
 
     def test_list_is_reverse_chronological_and_paginates(self):
         today = date(2026, 5, 8)

@@ -21,13 +21,28 @@ def runtime_path() -> Path:
     return _app_data_dir() / 'runtime.json'
 
 
-def write_runtime(port: int, *, token: str | None = None, pid: int | None = None) -> dict[str, Any]:
+def write_runtime(
+    port: int,
+    *,
+    token: str | None = None,
+    pid: int | None = None,
+    owner_pid: int | None = None,
+) -> dict[str, Any]:
+    """Publish the engine's endpoint, and who it belongs to.
+
+    `owner_pid` is the desktop shell that launched this engine as a sidecar.
+    It is what lets the shell distinguish *its* engine from one a developer
+    started by hand: an engine with no owner is nobody's to kill, while one
+    whose owner is dead is an orphan that should never have survived.
+    """
     payload = {
         'host': '127.0.0.1',
         'port': int(port),
         'token': token or secrets.token_urlsafe(24),
         'pid': pid if pid is not None else os.getpid(),
     }
+    if owner_pid:
+        payload['owner_pid'] = int(owner_pid)
     p = runtime_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(payload, indent=2), encoding='utf-8')

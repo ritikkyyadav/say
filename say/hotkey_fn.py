@@ -2,7 +2,13 @@
 #
 # Two modes:
 #   1. Push-to-talk:  Hold Fn → record → release Fn → transcribe
-#   2. Hands-free:    Press Fn+Space → recording toggles on → press Fn → stop & transcribe
+#   2. Hands-free:    Hold Fn + tap Space → recording latches on → release
+#                     Fn, talk freely → press Fn again → stop & transcribe
+#
+# Space latches hands-free at any point while Fn is held — both during the
+# brief PENDING window right after Fn AND after Fn has already fallen through
+# to push-to-talk — so the deliberate "hold Fn, then tap Space" gesture works
+# without demanding a sub-250ms chord (which no human reliably hits).
 #
 # The Fn key is a hardware-level modifier on macOS. pynput cannot detect it.
 # We use Quartz CGEventTap to watch kCGEventFlagsChanged for the
@@ -10,11 +16,13 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from collections.abc import Callable
 from enum import Enum
 
+from callback_pump import CallbackPump
 from logging_setup import get_logger
 
 _log = get_logger('hotkey_fn')
@@ -29,7 +37,31 @@ class _Mode(Enum):
 
 # Timing constants
 _PENDING_TIMEOUT = 0.25   # Max seconds to wait for Space after Fn press
+_KEY_V = 9                # kVK_ANSI_V: Fn+V re-inserts the last dictation
+_KEY_Z = 6                # kVK_ANSI_Z: Fn+Z undoes it (see recall.py)
 _PTT_START_DELAY = 0.08   # Small debounce before starting PTT recording
+
+# kCGEventFlagMaskSecondaryFn — the Fn/globe modifier bit. Module-level because
+# both the event callback and the post-outage resync need to test it.
+_FN_FLAG = 0x800000
+
+# The interpreter's thread-switch interval while the tap is live. The tap
+# callback shares this process with the decoder, and macOS disables a tap
+# whose callback does not return promptly (kCGEventTapDisabledByTimeout — 8 in
+# the log); the callback itself is microseconds of Python, so what it is
+# waiting on is the interpreter lock. The default interval lets a busy thread
+# keep the lock for 5 ms at a time; 1 ms hands it over five times as often.
+# A mitigation, not the fix — the fix is a helper process that owns the tap
+# and nothing else (see PRODUCTION.md, B6).
+_LOW_LATENCY_SWITCH_S = 0.001
+
+
+def apply_low_latency_switch_interval() -> float:
+    """Lower the GIL switch interval for the tap's benefit. Returns the value now in effect."""
+    current = sys.getswitchinterval()
+    if current > _LOW_LATENCY_SWITCH_S:
+        sys.setswitchinterval(_LOW_LATENCY_SWITCH_S)
+    return sys.getswitchinterval()
 
 
 class FnHotkeyListener:
@@ -41,13 +73,31 @@ class FnHotkeyListener:
 
     def __init__(
         self,
-        on_start_cb: Callable[[], None],
-        on_stop_cb: Callable[[], None],
-        on_cancel_cb: Callable[[], None] | None = None,
+        on_start_cb: Callable[[], object],
+        on_stop_cb: Callable[[], object],
+        on_cancel_cb: Callable[[], object] | None = None,
+        on_arm_cb: Callable[[], object] | None = None,
+        on_disarm_cb: Callable[[], object] | None = None,
+        on_reinsert_cb: Callable[[], object] | None = None,
+        on_undo_cb: Callable[[], object] | None = None,
     ):
         self._on_start = on_start_cb
         self._on_stop = on_stop_cb
         self._on_cancel = on_cancel_cb
+        # Fired the moment Fn goes down / the gesture is abandoned, so the
+        # recorder can open the mic and pre-fill its pre-roll buffer during the
+        # tap-vs-hold window instead of losing that audio.
+        self._on_arm = on_arm_cb
+        self._on_disarm = on_disarm_cb
+        # Fn+V / Fn+Z (see recall.py). Fired when Fn is *released*, never
+        # while it is held: an event posted with Fn down inherits it, and
+        # Fn + Delete is forward delete.
+        self._chords = {_KEY_V: on_reinsert_cb, _KEY_Z: on_undo_cb}
+        self._chord_action: Callable[[], object] | None = None
+        # Key presses that reached an app and mouse clicks, counted (never
+        # recorded) so undo can tell whether the user touched anything since
+        # Say typed. Say's own injected events are excluded before counting.
+        self._user_inputs = 0
 
         self._mode = _Mode.IDLE
         self._fn_down = False
@@ -61,14 +111,33 @@ class FnHotkeyListener:
         self._recording_active = False
         self._loop_started = threading.Event()
         self._tap_creation_failed = False
+        # Set for the duration of stop(): disabling our own tap makes macOS
+        # deliver a disabled-notice that used to be logged as an outage (56 of
+        # the 64 "Event tap was disabled" warnings in the log were this) and
+        # ran the resync against a listener that is being torn down.
+        self._stopping = False
+        # Callbacks run off the tap thread, but in order: a thread per
+        # callback let a quick release's `on_stop` overtake its own `on_start`
+        # and leave a recording that nothing ever stopped. See callback_pump.
+        self._pump = CallbackPump(name='say-fn-callbacks')
 
     @property
     def hotkey_label(self) -> str:
         return 'Fn (hold) / Fn+Space (toggle)'
 
-    def _fire(self, callback: Callable[[], None]) -> None:
-        """Fire a callback on a separate thread."""
-        threading.Thread(target=callback, daemon=True).start()
+    @property
+    def user_inputs(self) -> int:
+        """Key presses and clicks seen since the listener started. Count only."""
+        with self._lock:
+            return self._user_inputs
+
+    def _note_user_input(self) -> None:
+        with self._lock:
+            self._user_inputs += 1
+
+    def _fire(self, callback: Callable[[], object]) -> None:
+        """Run a callback off the tap thread, after every callback fired before it."""
+        self._pump.fire(callback)
 
     def _start_recording(self) -> None:
         """Begin recording (idempotent)."""
@@ -89,6 +158,11 @@ class FnHotkeyListener:
             if self._on_cancel:
                 self._fire(self._on_cancel)
 
+    def _disarm(self) -> None:
+        """Release a mic armed for a gesture that never became a recording."""
+        if self._on_disarm is not None:
+            self._fire(self._on_disarm)
+
     def _cancel_pending_timer(self) -> None:
         if self._pending_timer is not None:
             self._pending_timer.cancel()
@@ -104,12 +178,17 @@ class FnHotkeyListener:
 
     def _handle_fn_down(self) -> None:
         """Fn key pressed."""
+        _log.info('Fn down')
         with self._lock:
             self._fn_down = True
             self._fn_press_time = time.time()
 
             if self._mode == _Mode.IDLE:
-                # Enter pending mode — wait to see if Space follows
+                # Enter pending mode — wait to see if Space follows. Arm the
+                # mic now so the audio spoken during this window is captured
+                # rather than thrown away.
+                if self._on_arm is not None:
+                    self._fire(self._on_arm)
                 self._mode = _Mode.PENDING
                 self._cancel_pending_timer()
                 self._pending_timer = threading.Timer(
@@ -128,13 +207,18 @@ class FnHotkeyListener:
         """Fn key released."""
         with self._lock:
             self._fn_down = False
+            chord, self._chord_action = self._chord_action, None
+            if chord is not None:
+                # The chord already abandoned the gesture; now that no modifier
+                # is held, run what it asked for.
+                self._fire(chord)
 
             if self._mode == _Mode.PENDING:
-                # Fn released quickly without Space → was a short tap
-                # Start PTT recording momentarily, then immediately stop
-                # Actually: for a very short tap, just ignore it
+                # Fn released quickly without Space → a short tap, not a
+                # dictation. Release the mic we armed on key-down.
                 self._mode = _Mode.IDLE
                 self._cancel_pending_timer()
+                self._disarm()
 
             elif self._mode == _Mode.PUSH_TO_TALK:
                 # Fn released while in push-to-talk → stop recording
@@ -145,13 +229,22 @@ class FnHotkeyListener:
             # Hands-free mode: Fn up is irrelevant (stop is on next Fn down)
 
     def _handle_space_down(self) -> None:
-        """Space key pressed."""
+        """Space pressed while Fn is held → latch hands-free mode.
+
+        Accepts Space at any point while Fn is down — both during the brief
+        PENDING window right after Fn AND after Fn has already fallen through
+        to push-to-talk. This makes the deliberate "hold Fn, then tap Space"
+        gesture reliable instead of demanding a sub-250ms chord. If push-to-
+        talk was already recording, the same clip continues uninterrupted
+        (start is idempotent); we simply stop honoring Fn-release as the stop
+        trigger — the user releases Fn, talks freely, and presses Fn again to
+        stop.
+        """
         with self._lock:
-            if self._mode == _Mode.PENDING and self._fn_down:
-                # Fn+Space → enter hands-free mode
+            if self._fn_down and self._mode in (_Mode.PENDING, _Mode.PUSH_TO_TALK):
                 self._mode = _Mode.HANDS_FREE
                 self._cancel_pending_timer()
-                self._start_recording()
+                self._start_recording()  # idempotent — no-op if PTT already live
 
     def _handle_escape(self) -> None:
         """Escape key pressed — cancel recording."""
@@ -160,6 +253,107 @@ class FnHotkeyListener:
                 self._mode = _Mode.IDLE
                 self._cancel_pending_timer()
                 self._cancel_recording()
+
+    def _handle_other_key(self) -> None:
+        """A key other than Space/Esc was pressed while Fn is held.
+
+        Fn is a modifier before it is a dictation trigger: Fn+arrows are
+        Home/End/PageUp/PageDown, Fn+Delete is forward-delete, Fn+F-keys are
+        the function row. Without this guard, holding Fn for any of those
+        longer than the pending window started a real recording, opened the
+        microphone, and on release transcribed whatever was audible — which
+        could then be injected into the focused document.
+
+        So any other keystroke means "this was a keyboard shortcut, not a
+        dictation": abandon the gesture and discard anything captured. The
+        key event itself is never swallowed, so the shortcut still works.
+
+        Hands-free is deliberately exempt — the user latched that on purpose
+        and may well type while it runs.
+        """
+        with self._lock:
+            if self._mode == _Mode.PENDING:
+                self._mode = _Mode.IDLE
+                self._cancel_pending_timer()
+                self._disarm()
+            elif self._mode == _Mode.PUSH_TO_TALK:
+                self._mode = _Mode.IDLE
+                self._cancel_pending_timer()
+                self._cancel_recording()
+
+    def _handle_chord(self, keycode: int) -> bool:
+        """Fn+V or Fn+Z while Fn is held. True when the key was taken as a chord.
+
+        Taken only in the windows where any other key would abandon the
+        gesture anyway (PENDING, push-to-talk): the gesture is abandoned the
+        same way, and the action waits for Fn to come up. Hands-free is left
+        alone — someone typing V during a latched dictation is typing.
+        """
+        action = self._chords.get(keycode)
+        if action is None:
+            return False
+        with self._lock:
+            if not (self._fn_down and self._mode in (_Mode.PENDING, _Mode.PUSH_TO_TALK)):
+                return False
+        self._handle_other_key()
+        with self._lock:
+            self._chord_action = action
+        return True
+
+    def _fn_physically_down(self) -> bool | None:
+        """Is the Fn/globe key held right now, according to the hardware?
+
+        Read straight from the event source rather than from our cached
+        `_fn_down`, which is only as fresh as the last event the tap delivered.
+        Returns None when the state cannot be read, so callers can tell
+        "unknown" apart from "not held" and leave their state alone.
+        """
+        try:
+            import Quartz
+
+            flags = Quartz.CGEventSourceFlagsState(
+                Quartz.kCGEventSourceStateCombinedSessionState
+            )
+        except Exception:  # pragma: no cover - defensive, never break the tap
+            return None
+        if flags is None:
+            return None
+        return bool(flags & _FN_FLAG)
+
+    def _resync_after_tap_outage(self) -> None:
+        """Reconcile the gesture state after macOS disabled and we re-enabled the tap.
+
+        macOS disables the tap on callback timeout or on certain user input,
+        and delivers **nothing** in the meantime. If the user releases Fn
+        inside that window the release is lost forever, and the listener stays
+        convinced the key is still held: the mode never leaves PENDING /
+        PUSH_TO_TALK, the in-flight recording is never stopped, and every
+        later Fn press is rejected by the controller as "already recording".
+        Dictation is then dead until the app is restarted — which is exactly
+        what a tap outage mid-gesture used to cause.
+
+        So after re-enabling, ask the hardware whether Fn is actually still
+        down. If it is not, run the normal release path; that stops a
+        push-to-talk clip (transcribing what was captured, rather than
+        discarding it) or disarms a gesture that never became one. A hardware
+        state we cannot read is left alone — guessing here would cancel live
+        recordings on a spurious read.
+        """
+        with self._lock:
+            mid_gesture = self._fn_down or self._mode in (
+                _Mode.PENDING,
+                _Mode.PUSH_TO_TALK,
+            )
+        if not mid_gesture:
+            return
+
+        still_down = self._fn_physically_down()
+        if still_down is not False:
+            return  # genuinely still held, or unreadable — leave it be
+
+        _log.warning('Fn was released while the event tap was disabled; recovering.')
+        self._fn_down = False
+        self._handle_fn_up()
 
     def _event_callback(self, proxy, event_type, event, refcon):
         """Quartz CGEventTap callback.
@@ -170,9 +364,9 @@ class FnHotkeyListener:
           * Fn key state changes — so macOS doesn't fire the
             "Press 🌐 to: Show Emoji & Symbols" / globe-key action when
             the user releases Fn after recording.
-          * Space, but only while Fn is held in PENDING mode — so the
-            Fn+Space toggle combo doesn't insert a space character into
-            the focused app.
+          * Space, but only while Fn is held (PENDING or push-to-talk) —
+            so the Fn+Space hands-free latch doesn't insert a space
+            character into the focused app.
           * Escape, but only during active recording — so the user's
             normal Esc keystrokes still work everywhere else.
 
@@ -182,16 +376,37 @@ class FnHotkeyListener:
         """
         import Quartz
 
-        FN_FLAG = 0x800000  # kCGEventFlagMaskSecondaryFn
+        FN_FLAG = _FN_FLAG
 
         if event_type in (
             Quartz.kCGEventTapDisabledByTimeout,
             Quartz.kCGEventTapDisabledByUserInput,
         ):
+            if self._stopping:
+                # Our own stop() disabled the tap. Not an outage: nothing to
+                # re-enable and nothing to reconcile.
+                return event
             if self._tap is not None:
                 Quartz.CGEventTapEnable(self._tap, True)
                 _log.warning('Event tap was disabled (%s); re-enabled.', event_type)
+            # Re-enabling the tap is only half the recovery: nothing was
+            # delivered while it was dead, so a release inside that window was
+            # never observed. Reconcile against the hardware before carrying on.
+            self._resync_after_tap_outage()
             return event
+
+        # Our own injected keystrokes come back through this tap. They must be
+        # passed straight through: treated as user input, each chunk of a
+        # transcript being typed out looks like a keystroke, and one arriving
+        # while the trigger key is held abandons the gesture — so beginning a
+        # new dictation while the previous one is still landing would cancel it.
+        try:
+            from text_inject_cgevent import is_injected_event
+
+            if is_injected_event(Quartz, event):
+                return event
+        except Exception:
+            pass
 
         if event_type == Quartz.kCGEventFlagsChanged:
             flags = Quartz.CGEventGetFlags(event)
@@ -216,10 +431,13 @@ class FnHotkeyListener:
             )
             if keycode == 49:  # Space
                 with self._lock:
-                    swallow = self._mode == _Mode.PENDING and self._fn_down
+                    swallow = self._fn_down and self._mode in (
+                        _Mode.PENDING, _Mode.PUSH_TO_TALK
+                    )
                 if swallow:
                     self._handle_space_down()
                     return None
+                self._note_user_input()
                 return event
             if keycode == 53:  # Escape
                 with self._lock:
@@ -227,7 +445,29 @@ class FnHotkeyListener:
                 if swallow:
                     self._handle_escape()
                     return None
+                self._note_user_input()
                 return event
+            if self._handle_chord(keycode):
+                return None  # neither typed into the app nor counted as typing
+            self._note_user_input()
+
+            # Any other key while Fn is held means the user is doing an
+            # ordinary Fn shortcut (Fn+arrows, Fn+Delete, Fn+F-keys), not
+            # starting a dictation. Abandon the gesture, but let the key
+            # through so the shortcut still does its job.
+            with self._lock:
+                fn_chord = self._fn_down and self._mode in (
+                    _Mode.PENDING, _Mode.PUSH_TO_TALK
+                )
+            if fn_chord:
+                self._handle_other_key()
+            return event
+
+        elif event_type in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventRightMouseDown):
+            # A click can move the cursor without a keystroke. Counted so undo
+            # never deletes from a spot the user clicked to.
+            self._note_user_input()
+            return event
 
         return event
 
@@ -239,6 +479,8 @@ class FnHotkeyListener:
         event_mask = (
             (1 << Quartz.kCGEventFlagsChanged)
             | (1 << Quartz.kCGEventKeyDown)
+            | (1 << Quartz.kCGEventLeftMouseDown)
+            | (1 << Quartz.kCGEventRightMouseDown)
         )
 
         # Active session-level tap. The system globe-key action
@@ -295,6 +537,8 @@ class FnHotkeyListener:
 
         self._loop_started.clear()
         self._tap_creation_failed = False
+        self._stopping = False
+        apply_low_latency_switch_interval()
         self._thread = threading.Thread(target=self._run_tap, daemon=True)
         self._thread.start()
 
@@ -317,6 +561,7 @@ class FnHotkeyListener:
         """
         import Quartz
 
+        self._stopping = True
         tap = self._tap
         loop_ref = self._loop_ref
         source = self._run_loop_source
@@ -350,6 +595,7 @@ class FnHotkeyListener:
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
         self._thread = None
+        self._pump.stop()
 
     @property
     def is_recording(self) -> bool:

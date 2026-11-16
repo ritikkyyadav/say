@@ -4,40 +4,44 @@ The macOS menu bar wants a small monochrome *template* image that the
 system tints automatically for light vs. dark menu bars. We support two
 sources, in order:
 
-1. `assets/menubar-template.pdf` (or `.png`) — designer-authored, used
-   verbatim. This is the path we want shipped with the app.
-2. A fallback microphone glyph drawn in NSBezierPath at runtime, so the
-   app still looks reasonable before any asset is dropped in `assets/`.
-   The mascot bear identity lives in the wizard and Settings windows;
-   at 18pt the menu bar can't hold a recognizable bear face anyway.
+1. `assets/menubar-template.pdf` (or `.png`) — the Say mark, written by
+   `gen_logo.py`. This is the path that ships. It is a real vector PDF:
+   at 14 pt tall in a 22 pt bar there is little resampling budget to spare.
+2. A microphone glyph drawn in NSBezierPath at runtime, so the app still
+   looks reasonable if the asset is missing.
 
-A small status badge (recording dot, processing rings) is composited in
-the corner so all four states are visually distinct without changing
-the menu-bar title.
+Three things here are not the obvious choice, and all three follow from
+the mark being 5:2 rather than square — see `icon_point_size`,
+`_STATE_COLOR`, and `_render_png`.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 from enum import Enum
 
+import brand
 from AppKit import (
     NSBezierPath,
     NSBitmapImageFileTypePNG,
     NSBitmapImageRep,
     NSColor,
+    NSCompositingOperationSourceAtop,
     NSCompositingOperationSourceOver,
+    NSDeviceRGBColorSpace,
+    NSGraphicsContext,
     NSImage,
     NSMakeRect,
     NSMakeSize,
+    NSRectFillUsingOperation,
 )
 from logging_setup import get_logger
 
-import brand
-
 _log = get_logger('menubar_icon')
 
-ICON_PT = 18
+ICON_PT = 18      # the square fallback glyph only
+RENDER_SCALE = 3  # cache PNGs at @3x so retina menu bars stay crisp
 
 
 class IconState(str, Enum):
@@ -47,25 +51,70 @@ class IconState(str, Enum):
     ERROR = 'error'
 
 
+# Non-idle states recolour the whole mark instead of adding a badge dot in
+# the corner. A badged image cannot be a template image — the system would
+# tint the dot grey along with everything else — so the mark would be drawn
+# as literal black and vanish against a dark menu bar. Recolouring the mark
+# reads in both appearances and needs no extra width. (At the mark's old
+# 7 pt height a badge dot was too small to see anyway; at 14 pt it would be
+# legible — but the template-tinting problem rules it out either way.)
+_STATE_COLOR = {
+    IconState.RECORDING: brand.CRAIL,
+    IconState.PROCESSING: brand.AZURE,
+    IconState.ERROR: brand.SIGNAL,
+}
+
+CACHE_DIR = os.path.expanduser('~/Library/Caches/Say/menubar')
+
+_ASSET_NAMES = ('menubar-template.pdf', 'menubar.pdf', 'menubar-template.png')
+
+
+# ── Public API ───────────────────────────────────────────────────
+
 def icon_for(state: IconState) -> NSImage:
-    """Return an NSImage suitable for `rumps.App.icon`.
+    """Return an NSImage for `state`, sized in points.
 
     Always returns a fresh image — callers should cache if needed.
     """
-    base = brand.menubar_template() or _draw_microphone()
-    return _composite_badge(base, state)
+    base = _base_image()
+    color = _STATE_COLOR.get(state)
+    if color is None:
+        return base
+
+    size = base.size()
+    rect = NSMakeRect(0, 0, size.width, size.height)
+    out = NSImage.alloc().initWithSize_(size)
+    out.lockFocus()
+    try:
+        base.drawAtPoint_fromRect_operation_fraction_(
+            (0, 0), rect, NSCompositingOperationSourceOver, 1.0,
+        )
+        brand.color(color).setFill()
+        NSRectFillUsingOperation(rect, NSCompositingOperationSourceAtop)
+    finally:
+        out.unlockFocus()
+    out.setTemplate_(False)
+    return out
 
 
-CACHE_DIR = os.path.expanduser('~/Library/Caches/Say/menubar')
+def icon_point_size() -> tuple[float, float]:
+    """Size, in points, at which the menu-bar image must be displayed.
+
+    rumps hard-codes every status icon to 20x20 points, which would squash
+    a 5:2 mark into a smear; `app.py` undoes that using this. Measured from
+    the loaded asset rather than hard-coded, so the square fallback glyph
+    still comes out square.
+    """
+    size = _base_image().size()
+    return (float(size.width), float(size.height))
 
 
 def icon_path_for(state: IconState) -> str | None:
     """Write the icon for `state` to a cached PNG and return its path.
 
     rumps' `App.icon` setter takes a filesystem path. We render once per
-    state and cache the file — subsequent calls just return the same
-    path. Returns None if writing fails (caller should fall back to a
-    title-only menu bar).
+    state and cache the file. Returns None if writing fails (caller should
+    fall back to a title-only menu bar).
     """
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
@@ -73,45 +122,133 @@ def icon_path_for(state: IconState) -> str | None:
         _log.exception('Could not create menubar cache dir %s', CACHE_DIR)
         return None
 
-    path = os.path.join(CACHE_DIR, f'{state.value}.png')
+    stamp = _asset_fingerprint()
+    path = os.path.join(CACHE_DIR, f'{state.value}-{stamp}.png')
     if os.path.exists(path):
         return path
 
-    img = icon_for(state)
-    if not _write_png(img, path):
+    data = _render_png(state)
+    if data is None:
         return None
+    try:
+        tmp = f'{path}.tmp'
+        with open(tmp, 'wb') as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except OSError:
+        _log.exception('Failed to write menubar icon PNG to %s', path)
+        return None
+
+    _prune_stale(stamp)
     return path
 
 
 def is_template(state: IconState) -> bool:
     """Whether the icon for `state` should be treated as a template image.
 
-    Idle has no badge so it stays pure black-on-transparent and the
-    system tints it. Other states paint a colored dot, so the system
-    must NOT auto-tint or the dot turns grey.
+    Idle stays pure black-on-transparent so the system tints it for the
+    current menu bar. The other states are already coloured, so the system
+    must NOT auto-tint or they all turn grey.
     """
     return state == IconState.IDLE
 
 
-# ── PNG writer (TIFF -> bitmap rep -> PNG) ───────────────────────
+# ── Rendering ────────────────────────────────────────────────────
 
-def _write_png(image: NSImage, path: str) -> bool:
-    try:
-        tiff = image.TIFFRepresentation()
-        if tiff is None:
-            return False
-        rep = NSBitmapImageRep.imageRepWithData_(tiff)
-        if rep is None:
-            return False
-        png_data = rep.representationUsingType_properties_(
-            NSBitmapImageFileTypePNG, {},
+def _base_image() -> NSImage:
+    return brand.menubar_template() or _draw_microphone()
+
+
+def _render_png(state: IconState) -> bytes | None:
+    """Rasterise the glyph for `state` at RENDER_SCALE and encode as PNG.
+
+    Deliberately not `lockFocus` + `TIFFRepresentation`: that rasterises at
+    whatever backing scale the current display happens to have, so the
+    cached file would come out 1x on one Mac and 2x on another, and the
+    1x one is a blur once the menu bar scales it back up. An explicit
+    bitmap rep pins the resolution.
+    """
+    base = _base_image()
+    size = base.size()
+    pw = max(1, int(round(size.width * RENDER_SCALE)))
+    ph = max(1, int(round(size.height * RENDER_SCALE)))
+
+    rep = (
+        NSBitmapImageRep.alloc()
+        .initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(
+            None, pw, ph, 8, 4, True, False, NSDeviceRGBColorSpace, 0, 0,
         )
-        if png_data is None:
-            return False
-        return bool(png_data.writeToFile_atomically_(path, True))
-    except Exception:
-        _log.exception('Failed to write menubar icon PNG to %s', path)
-        return False
+    )
+    if rep is None:
+        _log.warning('Could not allocate a %dx%d bitmap for the menu-bar icon', pw, ph)
+        return None
+    ctx = NSGraphicsContext.graphicsContextWithBitmapImageRep_(rep)
+    if ctx is None:
+        _log.warning('Could not make a graphics context for the menu-bar icon')
+        return None
+
+    NSGraphicsContext.saveGraphicsState()
+    try:
+        NSGraphicsContext.setCurrentContext_(ctx)
+        rect = NSMakeRect(0, 0, pw, ph)
+        # NSZeroRect as the source rect means "the whole image".
+        base.drawInRect_fromRect_operation_fraction_(
+            rect, NSMakeRect(0, 0, 0, 0), NSCompositingOperationSourceOver, 1.0,
+        )
+        color = _STATE_COLOR.get(state)
+        if color is not None:
+            brand.color(color).setFill()
+            NSRectFillUsingOperation(rect, NSCompositingOperationSourceAtop)
+        ctx.flushGraphics()
+    finally:
+        NSGraphicsContext.restoreGraphicsState()
+
+    data = rep.representationUsingType_properties_(NSBitmapImageFileTypePNG, {})
+    return bytes(data) if data is not None else None
+
+
+# ── Cache invalidation ───────────────────────────────────────────
+
+_fingerprint: str | None = None
+
+
+def _asset_fingerprint() -> str:
+    """Short hash of the source asset, used in the cache filename.
+
+    Rendered PNGs live in ~/Library/Caches indefinitely. Without this, a
+    user who updates the app keeps the previous release's menu-bar glyph
+    forever — the cache would hit on `idle.png` and never re-render.
+    """
+    global _fingerprint
+    if _fingerprint is not None:
+        return _fingerprint
+
+    h = hashlib.sha256()
+    for name in _ASSET_NAMES:
+        path = os.path.join(brand.ASSETS_DIR, name)
+        if os.path.exists(path):
+            try:
+                with open(path, 'rb') as f:
+                    h.update(f.read())
+            except OSError:
+                h.update(name.encode())
+            break
+    else:
+        h.update(b'fallback-microphone')
+    h.update(f'{brand.MENUBAR_HEIGHT_PT}:{RENDER_SCALE}'.encode())
+
+    _fingerprint = h.hexdigest()[:10]
+    return _fingerprint
+
+
+def _prune_stale(stamp: str) -> None:
+    """Drop cached PNGs from earlier versions of the glyph."""
+    try:
+        for name in os.listdir(CACHE_DIR):
+            if name.endswith('.png') and f'-{stamp}.png' not in name:
+                os.remove(os.path.join(CACHE_DIR, name))
+    except OSError:
+        _log.debug('Could not prune %s', CACHE_DIR, exc_info=True)
 
 
 # ── Microphone fallback glyph ────────────────────────────────────
@@ -160,57 +297,3 @@ def _draw_microphone() -> NSImage:
         img.unlockFocus()
     img.setTemplate_(True)
     return img
-
-
-# ── State badge composite ────────────────────────────────────────
-
-def _composite_badge(base: NSImage, state: IconState) -> NSImage:
-    """Overlay a small status dot in the upper-right of the base image.
-
-    Idle leaves the base image untouched. Coloured states render a
-    coloured dot, which means the result is no longer a pure template
-    image — we set template=False so the menu bar doesn't try to tint
-    the dot grey.
-    """
-    if state == IconState.IDLE:
-        return base
-
-    size = base.size()
-    out = NSImage.alloc().initWithSize_(NSMakeSize(size.width, size.height))
-    out.lockFocus()
-    try:
-        base.drawAtPoint_fromRect_operation_fraction_(
-            (0, 0), NSMakeRect(0, 0, size.width, size.height),
-            NSCompositingOperationSourceOver, 1.0,
-        )
-
-        dot_d = 7.0
-        dot_x = size.width - dot_d - 0.5
-        dot_y = size.height - dot_d - 0.5
-        rect = NSMakeRect(dot_x, dot_y, dot_d, dot_d)
-
-        if state == IconState.RECORDING:
-            brand.color(brand.PINK_700).setFill()
-        elif state == IconState.PROCESSING:
-            brand.color(brand.SKY_500).setFill()
-        else:  # ERROR
-            brand.color((0.851, 0.310, 0.353)).setFill()
-
-        NSBezierPath.bezierPathWithOvalInRect_(rect).fill()
-
-        if state == IconState.PROCESSING:
-            for r_off in (1.5, 3.0):
-                ring = NSMakeRect(
-                    dot_x - r_off,
-                    dot_y - r_off,
-                    dot_d + 2 * r_off,
-                    dot_d + 2 * r_off,
-                )
-                path = NSBezierPath.bezierPathWithOvalInRect_(ring)
-                path.setLineWidth_(0.6)
-                brand.color(brand.SKY_500, alpha=0.35 / r_off).setStroke()
-                path.stroke()
-    finally:
-        out.unlockFocus()
-    out.setTemplate_(False)
-    return out

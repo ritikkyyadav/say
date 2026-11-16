@@ -29,8 +29,12 @@ _log = get_logger('metrics')
 
 
 class MetricsLedger:
-    def __init__(self, path: str = LEDGER_PATH):
-        self._path = path
+    def __init__(self, path: str | None = None):
+        # Resolved at construction, not bound as a default argument: a default
+        # is evaluated once at import, which made `LEDGER_PATH` impossible to
+        # redirect — and is how the test suite came to write 288 fake failures
+        # into the real ledger (see tests/conftest.py).
+        self._path = path or LEDGER_PATH
         self._lock = Lock()
         try:
             os.makedirs(os.path.dirname(self._path), exist_ok=True)

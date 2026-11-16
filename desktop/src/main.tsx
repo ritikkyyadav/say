@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
+import { Router } from './lib/router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
 import './styles/index.css';
@@ -10,7 +10,10 @@ const queryClient = new QueryClient({
     queries: {
       staleTime: 30_000,
       refetchOnWindowFocus: false,
-      retry: 1,
+      // Retry up to 4 times with exponential backoff (1s → 2s → 4s → 8s)
+      // so the UI recovers automatically when the engine is slow to boot.
+      retry: 4,
+      retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 10_000),
     },
   },
 });
@@ -18,9 +21,9 @@ const queryClient = new QueryClient({
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <Router>
         <App />
-      </BrowserRouter>
+      </Router>
     </QueryClientProvider>
   </React.StrictMode>,
 );

@@ -35,15 +35,39 @@ FIRST_RUN_MARKER = os.path.join(SETTINGS_DIR, 'first_run_complete')
 PERSISTABLE_KEYS = {
     'MODEL',
     'LANGUAGE',
+    'LANGUAGE_FOCUS',
     'INJECT_METHOD',
     'INITIAL_PROMPT',
     'SHOW_NOTIFICATIONS',
     'SHOW_OVERLAY',
-    'OVERLAY_POSITION',
+    'OVERLAY_CONTRAST',
+    'OVERLAY_THEME',
+    'OVERLAY_CUSTOM_COLORS',
+    'OVERLAY_PATTERN',
+    'USER_NAME',
+    'ONBOARDED',
     'PRE_ROLL_SECONDS',
     'MAX_RECORDING_SECONDS',
     'MIN_AUDIO_SECONDS',
     'DEVICE_WATCH_INTERVAL_S',
+    'SAVE_RECORDINGS',
+    'RECORDINGS_RETENTION_MODE',
+    'RECORDINGS_RETENTION_DAYS',
+    'RECORDINGS_MAX_BYTES',
+    # Auto-correction (postprocess.py)
+    'AUTO_CORRECT',
+    # Learning from corrections (readback.py / corrections.py)
+    'LEARN_FROM_CORRECTIONS',
+    'CORRECTION_READBACK_DELAY_S',
+    'AUTO_CAPITALISE',
+    'AUTO_TERMINAL_PUNCTUATION',
+    'DICTIONARY',
+    'DICTIONARY_REPLACEMENTS',
+    'SNIPPETS',
+    # Streaming / decoder behaviour
+    'STREAMING_TRANSCRIPTION',
+    'STYLE_SEED_ENABLED',
+    'CONDITION_ON_PREVIOUS_TEXT',
 }
 
 _lock = Lock()
@@ -74,6 +98,11 @@ def _write(data: dict[str, Any]) -> None:
     try:
         with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False, sort_keys=True)
+        # Owner-only, matching transcripts.db and runtime.json. The containing
+        # directory is already 0700 so nothing else could read it anyway, but
+        # this file now holds a name the user typed in, and a file's own mode
+        # should not depend on where it happens to live.
+        os.chmod(tmp, 0o600)
         os.replace(tmp, SETTINGS_FILE)
     except Exception as exc:
         _log.warning('Could not persist %s: %s', SETTINGS_FILE, exc)

@@ -27,20 +27,20 @@ _STEPS = [
         'Microphone',
         'microphone',
         'Say needs Microphone access to record your voice.\n\n'
-        'Open Settings → check the box next to your Terminal or Say.app.',
+        'Open Settings → check the box next to Say.',
     ),
     (
         'Accessibility',
         'accessibility',
         'Say uses Accessibility to inject transcribed text into the '
         'focused app and to watch the Fn key.\n\n'
-        'Open Settings → enable Say (or Terminal/iTerm/Warp).',
+        'Open Settings → enable Say.',
     ),
     (
         'Input Monitoring',
         'input-monitoring',
         'Say needs Input Monitoring to detect the global Fn hotkey.\n\n'
-        'Open Settings → enable Say (or Terminal/iTerm/Warp).',
+        'Open Settings → enable Say.',
     ),
 ]
 

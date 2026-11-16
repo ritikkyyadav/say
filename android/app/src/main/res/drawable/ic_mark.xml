@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Say mark on its native 30x12 grid (five to two — never square it). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="30dp"
+    android:height="12dp"
+    android:viewportWidth="30"
+    android:viewportHeight="12">
+    <path
+        android:fillColor="@color/say_ink"
+        android:pathData="M0.000,8.750h5.750v3.250h-5.750zM5.750,5.000h4.750v7.000h-4.750zM10.500,0.000h6.750v12.000h-6.750zM17.250,2.250h4.250v9.750h-4.250zM21.500,5.000h4.000v7.000h-4.000zM25.500,8.750h4.500v3.250h-4.500z" />
+</vector>

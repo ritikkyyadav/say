@@ -16,6 +16,7 @@ notifications), so callees that touch shared state should not block.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import objc
 from Foundation import NSObject
@@ -65,7 +66,7 @@ class SystemEventWatcher:
 
     def __init__(self, callback: EventCallback):
         self._callback = callback
-        self._observer = None
+        self._observer: Any = None
         self._registered = False
 
     def start(self) -> None:

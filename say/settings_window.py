@@ -11,7 +11,7 @@ Layout (top → bottom):
     Header  — sky band, mascot + "Say Settings"
     Section — Transcription (Model, Language, Pre-roll, Vocabulary)
     Section — Text Injection (Method)
-    Section — Interface (Show overlay, Show notifications, Position)
+    Section — Interface (Show notifications)
     Footer  — small grey print: where the file lives.
 
 The window is non-modal: the menu-bar app stays interactive while it's
@@ -21,15 +21,20 @@ spawning a second one.
 
 from __future__ import annotations
 
+import brand
+import config
+import model_catalog
+import model_manager
 import objc
+import settings as settings_mod
 from AppKit import (
     NSBackingStoreBuffered,
     NSBezelStyleRounded,
     NSImageView,
     NSMakeRect,
     NSPopUpButton,
-    NSSegmentStyleRounded,
     NSSegmentedControl,
+    NSSegmentStyleRounded,
     NSSlider,
     NSSwitch,
     NSTextField,
@@ -42,10 +47,6 @@ from AppKit import (
 from logging_setup import get_logger
 from Quartz import CGColorCreateGenericRGB
 
-import brand
-import config
-import settings as settings_mod
-
 _log = get_logger('settings_window')
 
 WIN_W = 540
@@ -54,25 +55,28 @@ HERO_H = 110
 PADDING = 28
 
 
-_MODEL_OPTIONS = [
-    ('mlx-community/whisper-large-v3-turbo', 'Large v3 Turbo (fast, default)'),
-    ('mlx-community/whisper-large-v3-mlx', 'Large v3 (most accurate)'),
-    ('mlx-community/whisper-medium-mlx', 'Medium (balanced)'),
-    ('mlx-community/whisper-small-mlx', 'Small (low storage)'),
-    ('mlx-community/whisper-base-mlx', 'Base'),
-    ('mlx-community/whisper-tiny-mlx', 'Tiny'),
-]
+def _model_options() -> list[tuple[str, str]]:
+    """(repo_id, label) pairs for the Model popup, sourced from the catalog."""
+    opts: list[tuple[str, str]] = []
+    for info in model_catalog.catalog():
+        suffix = ' (recommended)' if info.recommended else ''
+        opts.append((info.id, f'{info.name}{suffix}'))
+    return opts
+
+
+_MODEL_OPTIONS = _model_options()
 
 _INJECT_LABELS = ['Auto', 'Accessibility', 'Clipboard']
 _INJECT_VALUES = ['auto', 'accessibility', 'clipboard']
 
-_POSITION_LABELS = ['Bottom', 'Top']
-_POSITION_VALUES = ['bottom', 'top']
+_CONTRAST_LABELS = ['Auto', 'System', 'Dark', 'Light']
+_CONTRAST_VALUES = ['auto', 'system', 'dark', 'light']
+
 
 
 # ── Public API ───────────────────────────────────────────────────
 
-_singleton: '_SettingsController | None' = None
+_singleton: _SettingsController | None = None
 
 
 def open_settings() -> None:
@@ -161,7 +165,7 @@ class _SettingsController(NSView):
 
         sub = _label(
             NSMakeRect(PADDING + 80, HERO_H / 2 - 22, WIN_W - PADDING - 100, 18),
-            'Saved automatically. Model changes apply on next launch.',
+            'Saved automatically. Model changes apply right away.',
             brand.font(12), brand.color(brand.SLATE),
         )
         hero.addSubview_(sub)
@@ -187,11 +191,7 @@ class _SettingsController(NSView):
         y -= 18
         y = self._build_section(
             content, y, 'INTERFACE',
-            [
-                self._row_show_overlay,
-                self._row_show_notifications,
-                self._row_overlay_position,
-            ],
+            [self._row_show_overlay, self._row_show_notifications],
         )
 
     def _build_section(self, content, y_top: int, title: str, row_builders) -> int:
@@ -334,11 +334,36 @@ class _SettingsController(NSView):
         card.addSubview_(seg)
 
     def _row_show_overlay(self, card, top: int, h: int) -> None:
-        self._row_label(card, top, h, 'Show overlay')
+        self._row_label(card, top, h, 'Show dictation overlay')
         sw = self._switch_at(card, top, h)
         sw.setState_(1 if settings_mod.get('SHOW_OVERLAY', config.SHOW_OVERLAY) else 0)
         self._wire_action(sw, lambda sender: settings_mod.set_value(
             'SHOW_OVERLAY', bool(sender.state())))
+
+    def _row_overlay_contrast(self, card, top: int, h: int) -> None:
+        """How the glyph stays legible against whatever is behind it.
+
+        'Auto' draws a thin rim in the opposite tone, so the mark reads on a
+        white page even while macOS is in dark mode. 'System' is the older
+        behaviour: follow the appearance and hope the backdrop agrees.
+        """
+        self._row_label(card, top, h, 'Overlay contrast')
+
+        seg = NSSegmentedControl.alloc().initWithFrame_(
+            NSMakeRect(card.frame().size.width - 320, top + (h - 26) / 2, 306, 26)
+        )
+        seg.setSegmentCount_(len(_CONTRAST_LABELS))
+        seg.setSegmentStyle_(NSSegmentStyleRounded)
+        for i, lbl in enumerate(_CONTRAST_LABELS):
+            seg.setLabel_forSegment_(lbl, i)
+            seg.setWidth_forSegment_(74, i)
+
+        current = settings_mod.get('OVERLAY_CONTRAST', config.OVERLAY_CONTRAST)
+        seg.setSelectedSegment_(
+            _CONTRAST_VALUES.index(current) if current in _CONTRAST_VALUES else 0
+        )
+        self._wire_action(seg, lambda sender: self._on_overlay_contrast(sender))
+        card.addSubview_(seg)
 
     def _row_show_notifications(self, card, top: int, h: int) -> None:
         self._row_label(card, top, h, 'Show notifications')
@@ -346,28 +371,6 @@ class _SettingsController(NSView):
         sw.setState_(1 if settings_mod.get('SHOW_NOTIFICATIONS', config.SHOW_NOTIFICATIONS) else 0)
         self._wire_action(sw, lambda sender: settings_mod.set_value(
             'SHOW_NOTIFICATIONS', bool(sender.state())))
-
-    def _row_overlay_position(self, card, top: int, h: int) -> None:
-        self._row_label(card, top, h, 'Overlay position')
-
-        seg = NSSegmentedControl.alloc().initWithFrame_(
-            NSMakeRect(card.frame().size.width - 220, top + (h - 26) / 2, 200, 26)
-        )
-        seg.setSegmentCount_(len(_POSITION_LABELS))
-        seg.setSegmentStyle_(NSSegmentStyleRounded)
-        for i, lbl in enumerate(_POSITION_LABELS):
-            seg.setLabel_forSegment_(lbl, i)
-            seg.setWidth_forSegment_(96, i)
-
-        current = settings_mod.get('OVERLAY_POSITION', config.OVERLAY_POSITION)
-        if current in _POSITION_VALUES:
-            seg.setSelectedSegment_(_POSITION_VALUES.index(current))
-        else:
-            seg.setSelectedSegment_(0)
-
-        self._wire_action(seg, lambda sender: settings_mod.set_value(
-            'OVERLAY_POSITION', _POSITION_VALUES[sender.selectedSegment()]))
-        card.addSubview_(seg)
 
     # ── Row helpers ──────────────────────────────────────────────
 
@@ -421,7 +424,13 @@ class _SettingsController(NSView):
             return
         value = item.representedObject()
         if value:
-            settings_mod.set_value('MODEL', str(value))
+            # Route through the manager so the running engine swaps to the new
+            # model immediately (and the choice is persisted) — no relaunch.
+            try:
+                model_manager.get_manager().set_active(str(value))
+            except Exception:
+                _log.exception('Live model switch failed; persisting only')
+                settings_mod.set_value('MODEL', str(value))
 
     def _on_language(self, sender) -> None:
         text = (sender.stringValue() or '').strip()
@@ -439,6 +448,11 @@ class _SettingsController(NSView):
         idx = sender.selectedSegment()
         if 0 <= idx < len(_INJECT_VALUES):
             settings_mod.set_value('INJECT_METHOD', _INJECT_VALUES[idx])
+
+    def _on_overlay_contrast(self, sender) -> None:
+        idx = sender.selectedSegment()
+        if 0 <= idx < len(_CONTRAST_VALUES):
+            settings_mod.set_value('OVERLAY_CONTRAST', _CONTRAST_VALUES[idx])
 
 
 # ── Action target & utilities ────────────────────────────────────

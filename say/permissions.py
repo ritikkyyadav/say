@@ -35,6 +35,50 @@ def open_privacy_settings(section: str = 'accessibility') -> bool:
         return False
 
 
+def request_accessibility_trust(prompt: bool = True) -> bool:
+    """Check — and optionally prompt for — Accessibility trust for THIS process.
+
+    Calls ``AXIsProcessTrustedWithOptions`` with ``kAXTrustedCheckOptionPrompt``
+    so that, when the running executable is not yet trusted, macOS (a) shows the
+    system "allow Accessibility" dialog and (b) registers this exact binary in
+    Privacy & Security → Accessibility. Registering the running identity directly
+    is what makes the grant bind correctly after an ad-hoc rebuild changes the
+    cdhash — it sidesteps the nested-bundle misattribution where dragging the
+    engine into Settings credits the parent shell instead.
+
+    Returns True if already trusted. Safe no-op (returns False, never raises)
+    when the AX framework / pyobjc bindings are unavailable (e.g. non-macOS).
+    """
+    AXIsProcessTrustedWithOptions = None
+    kAXTrustedCheckOptionPrompt = None
+    for module_name in ('ApplicationServices', 'HIServices'):
+        try:
+            mod = __import__(module_name)
+            AXIsProcessTrustedWithOptions = mod.AXIsProcessTrustedWithOptions
+            kAXTrustedCheckOptionPrompt = mod.kAXTrustedCheckOptionPrompt
+            break
+        except Exception:
+            continue
+    if AXIsProcessTrustedWithOptions is None:
+        return False
+    try:
+        return bool(
+            AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: bool(prompt)})
+        )
+    except Exception:
+        return False
+
+
+def accessibility_trusted() -> bool:
+    """Whether this process is Accessibility-trusted, without prompting.
+
+    Cheap enough to poll. Note this flips to True inside an already-running
+    process the moment the user toggles the switch — the grant does not wait
+    for a restart, only the checks an app performs at startup do.
+    """
+    return request_accessibility_trust(prompt=False)
+
+
 def _has_module(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
 

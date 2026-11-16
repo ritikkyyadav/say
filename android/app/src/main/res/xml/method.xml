@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  One subtype, mode "voice", NOT auxiliary.
+
+  Voice IMEs usually declare isAuxiliary="true" so that other keyboards' mic
+  keys find them by mode while the system keeps them out of the language-switch
+  rotation. On a phone whose keyboard has no third-party voice key (Gboard, and
+  every OEM keyboard), an auxiliary-only IME is unreachable: the globe key
+  skips it and the switcher hides it unless a keyboard is already up. That is
+  exactly the "I can't transcribe" a first real-device install produced. A
+  regular subtype puts Say in the rotation and the switcher everywhere; the
+  mode stays "voice" so keyboards that do have a voice key still find it, and
+  Say hands the field back with switchToPreviousInputMethod() when it is done.
+-->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="com.ritikyadav.say.ui.HomeActivity"
+    android:supportsSwitchingToNextInputMethod="true">
+    <subtype
+        android:imeSubtypeLocale="en_US"
+        android:imeSubtypeMode="voice"
+        android:isAuxiliary="false"
+        android:label="@string/ime_subtype_label"
+        android:overridesImplicitlyEnabledSubtype="false" />
+</input-method>

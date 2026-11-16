@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Say" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/say_accent</item>
+        <item name="colorOnPrimary">@color/ink</item>
+        <item name="colorSurface">@color/say_surface</item>
+        <item name="colorOnSurface">@color/say_ink</item>
+        <item name="colorOnSurfaceVariant">@color/say_ink_secondary</item>
+        <item name="colorOutline">@color/say_hairline</item>
+        <item name="android:windowBackground">@color/say_canvas</item>
+        <item name="android:statusBarColor">@color/say_canvas</item>
+        <item name="android:navigationBarColor">@color/say_canvas</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:textColorPrimary">@color/say_ink</item>
+        <item name="android:textColorSecondary">@color/say_ink_secondary</item>
+    </style>
+</resources>

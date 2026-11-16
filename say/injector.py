@@ -37,20 +37,52 @@ def escape_applescript_text(text: str) -> str:
     return text.replace('\\', '\\\\').replace('"', '\\"')
 
 
+_SECURE_INPUT_ERROR = (
+    'The focused field has secure input enabled (a password field, or a '
+    'terminal with secure keyboard entry). macOS blocks synthetic keystrokes '
+    'and paste there. The transcript was saved instead.'
+)
+
+
+def is_secure_input_enabled() -> bool:
+    """True when macOS is blocking synthetic keyboard events system-wide.
+
+    Password fields and terminals with "Secure Keyboard Entry" turn this on.
+    While it is on, both injection paths silently fail — CGEvent posts are
+    discarded and Cmd+V does nothing — with no error reported to the sender.
+    Checking first is the only way to tell the user what happened instead of
+    reporting a success that never reached the screen.
+    """
+    try:
+        import ctypes
+
+        lib = ctypes.CDLL('/System/Library/Frameworks/Carbon.framework/Carbon')
+        fn = lib.IsSecureEventInputEnabled
+        fn.restype = ctypes.c_bool
+        fn.argtypes = []
+        return bool(fn())
+    except Exception:
+        # If we cannot ask, assume it is off and let injection try.
+        return False
+
+
 def inject(text: str) -> InjectionResult:
     """Inject transcribed text into the currently focused application."""
     if not text:
         return InjectionResult(False, 'none', 'No text to inject.')
 
+    if is_secure_input_enabled():
+        return InjectionResult(False, 'blocked', _SECURE_INPUT_ERROR)
+
     method = config.INJECT_METHOD
 
     if method == 'accessibility':
-        result = inject_text_cgevent(text)
-        return InjectionResult(result.success, 'accessibility', result.error)
+        cg = inject_text_cgevent(text)
+        return InjectionResult(cg.success, 'accessibility', cg.error)
 
     if method == 'clipboard':
-        result = inject_text_clipboard(text)
-        return InjectionResult(result.success, 'clipboard', result.error)
+        clip = inject_text_clipboard(text)
+        return InjectionResult(clip.success, 'clipboard', clip.error)
 
     cge = inject_text_cgevent(text)
     if cge.success:

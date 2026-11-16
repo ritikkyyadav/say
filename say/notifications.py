@@ -6,7 +6,7 @@
 
 import subprocess
 
-from config import SHOW_NOTIFICATIONS
+import config
 
 
 def notify(title: str, text: str):
@@ -16,21 +16,37 @@ def notify(title: str, text: str):
         title: Notification title (e.g., 'Say')
         text:  Notification body text (truncated to 80 chars)
     """
-    if not SHOW_NOTIFICATIONS:
+    # Read at call time, not import time. `from config import
+    # SHOW_NOTIFICATIONS` copied the value once, so switching notifications
+    # off in Preferences did nothing until the engine was restarted — settings
+    # mirror onto the `config` module, and nothing here re-read it.
+    if not getattr(config, 'SHOW_NOTIFICATIONS', True):
         return
 
-    # Truncate long text for notification display
-    display_text = text[:80] + ('…' if len(text) > 80 else '')
+    # Collapse whitespace before truncating. An AppleScript string literal
+    # cannot contain a raw newline, so the old string-building version turned
+    # every multi-line transcript into a syntax error and silently showed no
+    # notification at all — invisible, because osascript's failure is a
+    # non-zero exit rather than an exception.
+    display_text = ' '.join(text.split())
+    if len(display_text) > 80:
+        display_text = display_text[:80] + '…'
 
-    # Escape for AppleScript
-    display_text = display_text.replace('\\', '\\\\').replace('"', '\\"')
-    title = title.replace('\\', '\\\\').replace('"', '\\"')
-
-    script = f'display notification "{display_text}" with title "{title}"'
-
+    # The text is passed as an *argument*, never interpolated into the script.
+    # Hand-escaping quotes and backslashes was correct as written, but it is
+    # one refactor away from not being — and this is a transcript, i.e. the
+    # most attacker-influenced string in the whole app if anyone ever dictates
+    # something they were sent. argv has no quoting to get wrong.
     try:
         subprocess.run(
-            ['osascript', '-e', script],
+            [
+                'osascript',
+                '-e', 'on run argv',
+                '-e', 'display notification (item 1 of argv) with title (item 2 of argv)',
+                '-e', 'end run',
+                display_text,
+                title,
+            ],
             capture_output=True,
             timeout=5,
         )

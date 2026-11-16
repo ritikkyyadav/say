@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The desktop's warm-minimal tokens (desktop/tailwind.config.js): cream
+     book-cloth canvas, warm near-black ink, crail as the one energy colour. -->
+<resources>
+    <color name="ink">#141413</color>
+    <color name="book_cloth">#FAF9F5</color>
+    <color name="paper">#F5F4EE</color>
+    <color name="cloud_light">#E8E6DC</color>
+    <color name="cloud_mid">#B0AEA5</color>
+    <color name="cloud_dark">#6B6A63</color>
+    <color name="crail">#D97757</color>
+    <color name="crail_deep">#C66848</color>
+    <color name="slate_blue">#6A9BCC</color>
+    <color name="olive">#788C5D</color>
+    <color name="signal">#D94F5A</color>
+    <color name="mark">#BC2C61</color>
+
+    <!-- Semantic. Night values live in values-night/colors.xml. -->
+    <color name="say_canvas">@color/book_cloth</color>
+    <color name="say_surface">@color/paper</color>
+    <color name="say_ink">@color/ink</color>
+    <color name="say_ink_secondary">@color/cloud_dark</color>
+    <color name="say_hairline">@color/cloud_light</color>
+    <color name="say_accent">@color/crail</color>
+    <!-- The logo. Not used by ic_launcher_monochrome, which the
+         system tints itself — the Android twin of the Mac menu bar. -->
+    <color name="say_mark">@color/mark</color>
+    <color name="say_panel">#F0EEE6</color>
+    <color name="ic_launcher_background">@color/book_cloth</color>
+</resources>

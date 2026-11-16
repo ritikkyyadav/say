@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from tempfile import TemporaryDirectory
 
 from fastapi.testclient import TestClient
-
 from server.api import create_app
 from server.store import TranscriptStore
 
@@ -18,6 +17,9 @@ def _now() -> str:
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
+        import config
+        import settings
+
         self._tmp = TemporaryDirectory()
         self.store = TranscriptStore(os.path.join(self._tmp.name, 't.db'))
         self.store.insert(
@@ -29,10 +31,38 @@ class ApiTests(unittest.TestCase):
             target_app='com.apple.TextEdit',
             ts_utc=_now(),
         )
+        # Isolate settings + config knobs so recording-config tests never
+        # touch the user's real ~/Library settings.json.
+        self._settings_file = settings.SETTINGS_FILE
+        self._settings_dir = settings.SETTINGS_DIR
+        settings.SETTINGS_DIR = self._tmp.name
+        settings.SETTINGS_FILE = os.path.join(self._tmp.name, 'settings.json')
+        self._cfg = {
+            k: getattr(config, k)
+            for k in (
+                'SAVE_RECORDINGS', 'RECORDINGS_RETENTION_MODE',
+                'RECORDINGS_RETENTION_DAYS', 'RECORDINGS_MAX_BYTES',
+                'LANGUAGE', 'LANGUAGE_FOCUS',
+            )
+        }
+        # Hermetic Moonshine cache so model state never reads the dev machine.
+        self._prev_moon = os.environ.get('SAY_MOONSHINE_CACHE')
+        os.environ['SAY_MOONSHINE_CACHE'] = os.path.join(self._tmp.name, 'moon')
         self.app = create_app(store=self.store, auth_token='secret')
         self.client = TestClient(self.app)
 
     def tearDown(self):
+        import config
+        import settings
+
+        settings.SETTINGS_FILE = self._settings_file
+        settings.SETTINGS_DIR = self._settings_dir
+        for k, v in self._cfg.items():
+            setattr(config, k, v)
+        if self._prev_moon is None:
+            os.environ.pop('SAY_MOONSHINE_CACHE', None)
+        else:
+            os.environ['SAY_MOONSHINE_CACHE'] = self._prev_moon
         self.client.close()
         self.store.close()
         self._tmp.cleanup()
@@ -63,6 +93,29 @@ class ApiTests(unittest.TestCase):
         self.assertIn('total_words', body)
         self.assertGreaterEqual(body['total_words'], 2)
         self.assertEqual(body['fixes_count'], 0)
+        self.assertEqual(body['correction_coverage_rate'], 0)
+        self.assertEqual(body['correction_outcomes_30d'], {'unknown_historical': 1})
+
+    def test_corrections_expose_coverage_by_app_without_private_asr(self):
+        rid = self.store.insert(
+            text='post-processed text', raw_asr='raw voice text',
+            pipeline_hash='private-hash', observation_status='pending',
+            audio_seconds=2, inference_seconds=0.2, model='m',
+            inject_method='accessibility', target_app='com.apple.TextEdit',
+        )
+        self.store.finish_observation(rid, 'rewrite')
+        self.assertEqual(self.client.get('/corrections').status_code, 401)
+        response = self.client.get('/corrections?token=secret')
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        coverage = body['summary']['coverage']
+        self.assertEqual(coverage['successful'], 2)
+        self.assertEqual(coverage['measured'], 1)
+        self.assertEqual(coverage['outcomes']['rewrite'], 1)
+        self.assertEqual(coverage['by_app']['com.apple.TextEdit']['measured'], 1)
+        self.assertEqual(body['summary']['insertions'], 0)
+        self.assertNotIn('raw voice text', response.text)
+        self.assertNotIn('private-hash', response.text)
 
     def test_user_profile_returns_first_name(self):
         r = self.client.get('/user/profile?token=secret')
@@ -87,6 +140,230 @@ class ApiTests(unittest.TestCase):
         grid = r2.json()
         self.assertEqual(len(grid), 14)
 
+    # ── Model management endpoints ───────────────────────────────────────
+
+    def test_models_requires_auth(self):
+        r = self.client.get('/models')
+        self.assertEqual(r.status_code, 401)
+
+    def test_models_lists_catalog_with_active(self):
+        r = self.client.get('/models?token=secret')
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertIn('active', body)
+        self.assertIn('cache_bytes', body)
+        self.assertGreaterEqual(len(body['models']), 4)
+        actives = [m for m in body['models'] if m['active']]
+        self.assertEqual(len(actives), 1)
+        self.assertEqual(actives[0]['id'], body['active'])
+
+    def test_set_active_rejects_unknown_model(self):
+        r = self.client.post(
+            '/models/active',
+            json={'id': 'no-such/model'},
+            headers={'Authorization': 'Bearer secret'},
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_download_rejects_unknown_model(self):
+        r = self.client.post('/models/no-such/model/download?token=secret')
+        self.assertEqual(r.status_code, 404)
+
+    def test_delete_active_model_is_refused(self):
+        active = self.client.get('/models?token=secret').json()['active']
+        r = self.client.delete(
+            f'/models/{active}',
+            headers={'Authorization': 'Bearer secret'},
+        )
+        self.assertEqual(r.status_code, 409)
+
+    def test_cancel_download_is_noop_when_idle(self):
+        r = self.client.post('/models/mlx-community/whisper-tiny-mlx/cancel?token=secret')
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()['cancelled'])
+
+    def test_download_insufficient_storage_returns_507(self):
+        import model_manager
+
+        # Empty temp cache so the target model reads as not-downloaded, and a
+        # stubbed free-space probe so the disk pre-check trips.
+        with TemporaryDirectory() as cache:
+            prev = os.environ.get('HF_HUB_CACHE')
+            orig_free = model_manager._free_bytes_for_cache
+            os.environ['HF_HUB_CACHE'] = cache
+            model_manager._free_bytes_for_cache = lambda: 1000
+            try:
+                r = self.client.post(
+                    '/models/mlx-community/whisper-tiny-mlx/download?token=secret'
+                )
+            finally:
+                model_manager._free_bytes_for_cache = orig_free
+                if prev is None:
+                    os.environ.pop('HF_HUB_CACHE', None)
+                else:
+                    os.environ['HF_HUB_CACHE'] = prev
+        self.assertEqual(r.status_code, 507)
+
+    # ── Recordings endpoints ─────────────────────────────────────────────
+
+    def test_recordings_requires_auth(self):
+        self.assertEqual(self.client.get('/recordings').status_code, 401)
+
+    def test_recordings_config_defaults_and_update(self):
+        cfg = self.client.get('/recordings/config?token=secret').json()
+        self.assertIn('save_recordings', cfg)
+        self.assertIn('retention_mode', cfg)
+        self.assertIn('total_bytes', cfg)
+        r = self.client.post(
+            '/recordings/config',
+            json={'save_recordings': True, 'retention_mode': 'keep_all'},
+            headers={'Authorization': 'Bearer secret'},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()['save_recordings'])
+
+    def test_recordings_config_rejects_bad_mode(self):
+        r = self.client.post(
+            '/recordings/config',
+            json={'retention_mode': 'nope'},
+            headers={'Authorization': 'Bearer secret'},
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_recording_audio_roundtrip_and_delete(self):
+        import numpy as np
+        import recordings
+
+        tid = self.store.insert(
+            text='clip', audio_seconds=1.0, inference_seconds=0.1, model='m',
+            inject_method='accessibility', target_app=None, ts_utc=_now(),
+        )
+        recordings.save_for_transcript(self.store, tid, np.zeros(16000, dtype=np.float32))
+
+        listed = self.client.get('/recordings?token=secret').json()
+        self.assertTrue(any(x['id'] == tid for x in listed))
+
+        ra = self.client.get(f'/recordings/{tid}/audio?token=secret')
+        self.assertEqual(ra.status_code, 200)
+        self.assertTrue(ra.headers['content-type'].startswith('audio/wav'))
+        self.assertTrue(ra.content.startswith(b'RIFF'))
+
+        rd = self.client.delete(
+            f'/recordings/{tid}', headers={'Authorization': 'Bearer secret'}
+        )
+        self.assertEqual(rd.status_code, 200)
+        self.assertTrue(rd.json()['deleted'])
+        self.assertEqual(
+            self.client.get(f'/recordings/{tid}/audio?token=secret').status_code, 404
+        )
+
+    def test_recordings_export_empty(self):
+        r = self.client.post('/recordings/export?token=secret')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['count'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LanguageApiTests(ApiTests):
+    """B5: the language is reachable, validated, persisted and honest."""
+
+    def _auth(self):
+        return {'Authorization': 'Bearer secret'}
+
+    def test_get_reports_the_current_language_and_options(self):
+        import config
+
+        config.LANGUAGE = 'en'
+        config.LANGUAGE_FOCUS = 'any'   # the picker is filtered by focus; 'any' lists every language
+        r = self.client.get('/language', headers=self._auth())
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body['code'], 'en')
+        self.assertFalse(body['auto'])
+        self.assertEqual(body['name'], 'English')
+        self.assertIn('hi', [o['code'] for o in body['options']])
+        self.assertIn('applies_to_active_model', body)
+
+    def test_requires_auth(self):
+        self.assertEqual(self.client.get('/language').status_code, 401)
+        self.assertEqual(self.client.post('/language', json={'code': 'hi'}).status_code, 401)
+
+    def test_set_persists_and_mirrors_onto_config(self):
+        import config
+        import settings
+
+        r = self.client.post('/language', json={'code': 'hi'}, headers=self._auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['code'], 'hi')
+        self.assertEqual(r.json()['name'], 'Hindi')
+        self.assertEqual(config.LANGUAGE, 'hi')
+        self.assertEqual(settings.all_settings().get('LANGUAGE'), 'hi')
+
+    def test_null_means_automatic(self):
+        import config
+
+        r = self.client.post('/language', json={'code': None}, headers=self._auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()['auto'])
+        self.assertIsNone(config.LANGUAGE)
+
+    def test_a_bad_code_is_refused_and_nothing_written(self):
+        import config
+        import settings
+
+        config.LANGUAGE = 'en'
+        r = self.client.post('/language', json={'code': 'english'}, headers=self._auth())
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(config.LANGUAGE, 'en')
+        self.assertNotIn('LANGUAGE', settings.all_settings())
+
+    def test_get_reports_the_focus_and_its_groups(self):
+        import config
+
+        config.LANGUAGE_FOCUS = 'south_asian'
+        body = self.client.get('/language', headers=self._auth()).json()
+        self.assertEqual(body['focus'], 'south_asian')
+        self.assertEqual([g['id'] for g in body['groups']], ['english', 'european', 'south_asian', 'any'])
+        self.assertIn('hi', [o['code'] for o in body['options']])
+        self.assertEqual(body['recommended_model'], 'mlx-community/whisper-large-v3-turbo')
+
+    def test_choosing_a_focus_applies_its_default_language(self):
+        import config
+        import settings
+
+        r = self.client.post('/language', json={'focus': 'south_asian'}, headers=self._auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['focus'], 'south_asian')
+        self.assertTrue(r.json()['auto'])
+        self.assertIsNone(config.LANGUAGE)
+        self.assertEqual(settings.all_settings().get('LANGUAGE_FOCUS'), 'south_asian')
+
+        r = self.client.post('/language', json={'focus': 'english'}, headers=self._auth())
+        self.assertEqual(r.json()['code'], 'en')
+        self.assertEqual(config.LANGUAGE, 'en')
+
+    def test_a_focus_with_a_pinned_language_keeps_the_pin(self):
+        import config
+
+        r = self.client.post(
+            '/language', json={'focus': 'european', 'code': 'de'}, headers=self._auth()
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['focus'], 'european')
+        self.assertEqual(config.LANGUAGE, 'de')
+
+    def test_a_bad_focus_is_refused_and_nothing_written(self):
+        import config
+        import settings
+
+        config.LANGUAGE = 'en'
+        config.LANGUAGE_FOCUS = 'english'
+        r = self.client.post('/language', json={'focus': 'martian', 'code': 'hi'}, headers=self._auth())
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(config.LANGUAGE, 'en')
+        self.assertNotIn('LANGUAGE', settings.all_settings())
+        self.assertNotIn('LANGUAGE_FOCUS', settings.all_settings())
+
