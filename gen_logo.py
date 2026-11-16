@@ -276,7 +276,8 @@ def _flatten(rgba: tuple[int, int, int, int],
              over: tuple[int, int, int]) -> tuple[int, int, int, int]:
     """Composite `rgba` over an opaque `over` colour, keeping it opaque."""
     a = rgba[3] / 255.0
-    return (*(int(round(rgba[i] * a + over[i] * (1 - a))) for i in range(3)), 255)
+    r, g, b = (int(round(rgba[i] * a + over[i] * (1 - a))) for i in range(3))
+    return r, g, b, 255
 
 
 def render_icon(px: int) -> Image.Image:

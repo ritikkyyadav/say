@@ -87,4 +87,10 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 check_untyped_defs = false
 files = ["say"]
-exclude = ["build", "dist", ".*/__pycache__"]
+exclude = [
+    "build",
+    "dist",
+    ".*/__pycache__",
+    "(^|/)(target|node_modules)/",
+    "^output/",
+]
