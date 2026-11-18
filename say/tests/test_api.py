@@ -183,25 +183,19 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(r.json()['cancelled'])
 
     def test_download_insufficient_storage_returns_507(self):
+        from unittest.mock import patch
+
         import model_manager
 
-        # Empty temp cache so the target model reads as not-downloaded, and a
-        # stubbed free-space probe so the disk pre-check trips.
-        with TemporaryDirectory() as cache:
-            prev = os.environ.get('HF_HUB_CACHE')
-            orig_free = model_manager._free_bytes_for_cache
-            os.environ['HF_HUB_CACHE'] = cache
-            model_manager._free_bytes_for_cache = lambda path=None: 1000
-            try:
-                r = self.client.post(
-                    '/models/mlx-community/whisper-tiny-mlx/download?token=secret'
-                )
-            finally:
-                model_manager._free_bytes_for_cache = orig_free
-                if prev is None:
-                    os.environ.pop('HF_HUB_CACHE', None)
-                else:
-                    os.environ['HF_HUB_CACHE'] = prev
+        with (
+            TemporaryDirectory() as cache,
+            patch.dict(os.environ, {
+                'SAY_MOONSHINE_CACHE': cache,
+                'SAY_BUNDLED_MODELS_DIR': os.path.join(cache, 'bundle'),
+            }),
+            patch.object(model_manager, '_free_bytes_for_cache', return_value=1000),
+        ):
+            r = self.client.post('/models/moonshine/medium-streaming-en/download?token=secret')
         self.assertEqual(r.status_code, 507)
 
     # ── Recordings endpoints ─────────────────────────────────────────────
@@ -328,7 +322,11 @@ class LanguageApiTests(ApiTests):
         self.assertEqual(body['focus'], 'south_asian')
         self.assertEqual([g['id'] for g in body['groups']], ['english', 'european', 'south_asian', 'any'])
         self.assertIn('hi', [o['code'] for o in body['options']])
-        self.assertEqual(body['recommended_model'], 'mlx-community/whisper-large-v3-turbo')
+        from platform_support import supports_backend
+
+        expected = ('whisper-cpp/small' if supports_backend('whisper-cpp')
+                    else 'mlx-community/whisper-large-v3-turbo')
+        self.assertEqual(body['recommended_model'], expected)
 
     def test_choosing_a_focus_applies_its_default_language(self):
         import config

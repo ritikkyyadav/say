@@ -220,7 +220,7 @@ class LinuxDesktop:
         snapshot: dict[str, bytes] = {}
         size = 0
         for name in formats:
-            data = source.data(name).data()
+            data = bytes(source.data(name).data())
             size += len(data)
             if size > _MAX_CLIPBOARD_BYTES or cancelled.is_set():
                 return InjectionResult(False, 'clipboard', 'Clipboard could not be preserved safely.')
@@ -260,7 +260,7 @@ class LinuxDesktop:
         finally:
             current = clipboard.mimeData()
             if (clipboard.ownsClipboard() and current is not None
-                    and current.data(_OWNER_MIME).data() == marker):
+                    and bytes(current.data(_OWNER_MIME).data()) == marker):
                 restored = self._core.QMimeData()
                 for name, data in snapshot.items():
                     restored.setData(name, data)
@@ -290,8 +290,8 @@ class LinuxDesktop:
                     self.changed('sleep', active)
 
             self._watcher = Watcher()
-            session = QtDBus.QDBusConnection.sessionBus()
-            system = QtDBus.QDBusConnection.systemBus()
+            session: Any = QtDBus.QDBusConnection.sessionBus()
+            system: Any = QtDBus.QDBusConnection.systemBus()
             results = []
             for service, path in [
                 ('org.freedesktop.ScreenSaver', '/org/freedesktop/ScreenSaver'),
@@ -300,12 +300,12 @@ class LinuxDesktop:
             ]:
                 results.append(session.connect(
                     service, path, service, 'ActiveChanged', self._watcher,
-                    QtCore.SLOT('screenChanged(bool)').encode(),
+                    QtCore.SLOT('screenChanged(bool)'),
                 ))
             results.append(system.connect(
                 'org.freedesktop.login1', '/org/freedesktop/login1',
                 'org.freedesktop.login1.Manager', 'PrepareForSleep', self._watcher,
-                QtCore.SLOT('sleepChanged(bool)').encode(),
+                QtCore.SLOT('sleepChanged(bool)'),
             ))
             return any(results)
         except Exception as exc:

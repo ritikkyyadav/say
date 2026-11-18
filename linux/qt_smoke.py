@@ -44,7 +44,7 @@ def main() -> None:
         )
         signal.setArguments([active])
         assert bus.send(signal)
-        wait_for(app, lambda: ('screen' in desktop._locked) == active)
+        wait_for(app, lambda expected=active: ('screen' in desktop._locked) == expected)
     assert cancellations == [True], 'The lock signal did not cancel exactly once.'
     bus.unregisterService('org.freedesktop.ScreenSaver')
     print('Native Qt MIME bytes, D-Bus slots, lock and unlock passed.')

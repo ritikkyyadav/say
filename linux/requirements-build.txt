@@ -6,3 +6,4 @@ httpx==0.28.1
 mypy==2.1.0
 ruff==0.15.19
 selenium==4.34.0
+huggingface-hub==1.19.0

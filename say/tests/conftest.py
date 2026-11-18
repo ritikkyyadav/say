@@ -25,6 +25,7 @@ import os
 import tempfile
 
 import pytest
+from platform_paths import application_data_dir
 
 _CACHE_ENV = (
     'HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE', 'HF_HOME',
@@ -33,7 +34,7 @@ _CACHE_ENV = (
 
 # The user's real settings file. Watched for the whole run: a test that writes
 # to it is a test that can change someone's dictation behaviour.
-_REAL_SETTINGS = os.path.expanduser('~/Library/Application Support/Say/settings.json')
+_REAL_SETTINGS = str(application_data_dir() / 'settings.json')
 
 
 def _fingerprint(path: str) -> tuple[float, int, bytes] | None:

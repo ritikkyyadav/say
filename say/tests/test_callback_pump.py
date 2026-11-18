@@ -1,6 +1,7 @@
 """The hotkey callback pump: ordered, isolated, stoppable."""
 from __future__ import annotations
 
+import sys
 import threading
 import time
 import unittest
@@ -92,6 +93,7 @@ class CallbackPumpTests(unittest.TestCase):
 class ListenerOrderingTests(unittest.TestCase):
     """The real listeners route through the pump."""
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'The Fn listener requires macOS Quartz.')
     def test_fn_listener_keeps_start_before_stop(self):
         from hotkey_fn import FnHotkeyListener
 

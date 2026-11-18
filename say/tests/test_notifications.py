@@ -33,7 +33,9 @@ class NotificationToggleTests(unittest.TestCase):
         with patch('notifications.subprocess.run') as run:
             notifications.notify('Say', 'line one\nline two')
         argv = run.call_args.args[0]
-        self.assertEqual(argv[-2:], ['line one line two', 'Say'])
+        expected = (['Say', 'line one line two'] if notifications.sys.platform.startswith('linux')
+                    else ['line one line two', 'Say'])
+        self.assertEqual(argv[-2:], expected)
 
 
 if __name__ == '__main__':

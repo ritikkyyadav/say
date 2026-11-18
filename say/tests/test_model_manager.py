@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 import config
 import model_catalog as mc
@@ -68,6 +69,9 @@ class ModelManagerTests(unittest.TestCase):
         import model_manager
 
         self.mm = importlib.reload(model_manager)
+        supported = patch.object(self.mm, 'supports_backend', return_value=True)
+        supported.start()
+        self.addCleanup(supported.stop)
         # model_manager imported `settings as settings_mod` — point it at ours.
         self.mm.settings_mod = self.settings_mod
         self.mgr = self.mm.ModelManager()

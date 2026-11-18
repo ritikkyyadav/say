@@ -48,13 +48,13 @@ def test_no_real_user_path_is_reachable_by_default(isolated_user_data):
     """The real locations, spelled out, so a regression names its victim."""
     import metrics
     import settings
+    from platform_paths import application_data_dir, application_log_dir
     from server import store as store_module
 
-    home = os.path.expanduser('~')
     real = (
-        os.path.join(home, 'Library', 'Logs', 'Say', 'metrics.jsonl'),
-        os.path.join(home, 'Library', 'Application Support', 'Say', 'settings.json'),
-        os.path.join(home, 'Library', 'Application Support', 'Say', 'transcripts.db'),
+        str(application_log_dir() / 'metrics.jsonl'),
+        str(application_data_dir() / 'settings.json'),
+        str(application_data_dir() / 'transcripts.db'),
     )
     current = (
         metrics.get_ledger()._path,
@@ -86,9 +86,10 @@ def test_a_settings_reload_cannot_leak_into_the_next_test_part_one():
     import importlib
 
     import settings
+    from platform_paths import application_data_dir
 
     importlib.reload(settings)
-    assert settings.SETTINGS_FILE.startswith(os.path.expanduser('~/Library'))
+    assert str(application_data_dir() / 'settings.json') == settings.SETTINGS_FILE
 
 
 def test_a_settings_reload_cannot_leak_into_the_next_test_part_two(isolated_user_data):

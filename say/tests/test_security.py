@@ -183,13 +183,15 @@ class NotificationSafety(unittest.TestCase):
         rather than an exception.
         """
         self.mod.notify('Say', 'first line\nsecond line\n\nthird')
-        text = self.calls[0][-2]
+        index = -1 if self.mod.sys.platform.startswith('linux') else -2
+        text = self.calls[0][index]
         self.assertNotIn('\n', text)
         self.assertIn('first line second line third', text)
 
     def test_long_text_is_truncated(self):
         self.mod.notify('Say', 'x ' * 400)
-        self.assertLessEqual(len(self.calls[0][-2]), 82)
+        index = -1 if self.mod.sys.platform.startswith('linux') else -2
+        self.assertLessEqual(len(self.calls[0][index]), 82)
 
     def test_notifications_can_be_switched_off(self):
         import config

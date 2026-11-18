@@ -49,7 +49,7 @@ jobs:
       - name: Native system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config dbus libportaudio2 libasound2-dev libasound2-plugins libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config dbus libportaudio2 libasound2-dev libasound2-plugins libegl1 libgl1 libopengl0 libxcb-icccm4 libxcb-keysyms1 libxcb-cursor0 libxkbcommon-x11-0 libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev libssl-dev libdbus-1-dev libxdo-dev patchelf file binutils xvfb xauth pulseaudio pulseaudio-utils espeak-ng ffmpeg openbox xcompmgr weston xdotool xclip scrot webkit2gtk-driver python3-gi gir1.2-gtk-3.0
       - name: Pinned Python dependencies
         id: dependencies
         run: python -m pip install -r linux/requirements-build.txt
@@ -59,12 +59,12 @@ jobs:
       - name: Python lint and type check
         if: always() && steps.dependencies.outcome == 'success'
         run: |
-          python -m ruff check say
+          python -m ruff check say linux
           python -m mypy say
       - name: Portable and Linux unit tests
         if: always() && steps.dependencies.outcome == 'success'
         run: |
-          python -m pytest say/tests --junitxml=linux-tests.xml \
+          xvfb-run -a python -m pytest say/tests --junitxml=linux-tests.xml \
             --ignore=say/tests/test_brand_assets.py \
             --ignore=say/tests/test_hotkey_fn.py \
             --ignore=say/tests/test_overlay_contrast.py \
@@ -77,6 +77,31 @@ jobs:
           npm ci --no-audit --no-fund
           npm test
           npm run build
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          rustup default 1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+      - name: Freeze the native offline engine
+        run: xvfb-run -a python linux/build_engine.py
+      - name: Native launcher tests
+        run: |
+          TAURI_CONFIG="$(cat desktop/src-tauri/tauri.linux.conf.json)" cargo test --locked --release --features custom-protocol --manifest-path desktop/src-tauri/Cargo.toml
+      - name: Build Debian and AppImage packages
+        working-directory: desktop
+        run: npm run tauri:build -- --ci --config src-tauri/tauri.linux.conf.json --bundles deb,appimage
+      - name: Keep native packages and provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages-${{ matrix.arch }}
+          compression-level: 0
+          path: |
+            desktop/src-tauri/target/release/bundle/deb/*.deb
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            say/build/linux/linux-build.json
+          if-no-files-found: error
       - name: Keep test diagnostics
         if: always()
         uses: actions/upload-artifact@v4
