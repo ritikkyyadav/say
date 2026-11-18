@@ -15,6 +15,7 @@ import { AppShare, Heatmap, HourBars, SavedVsTyping, Spark, WordList } from '../
 import { Discovery } from '../components/Discovery';
 import { TranscriptRow } from '../components/TranscriptRow';
 import { PermissionsBanner } from '../components/PermissionsBanner';
+import { DictationHint } from '../components/DictationHint';
 
 const PAGE = 40;
 
@@ -199,8 +200,7 @@ export function Home() {
           </p>
         ) : (
           <p>
-            Hold <span className="kbd">Fn</span> and speak. Release, and the text appears in
-            whatever app you&rsquo;re working in.
+            <DictationHint />
           </p>
         )}
       </header>
@@ -425,10 +425,7 @@ export function Home() {
             {query ? (
               'Try a different word.'
             ) : (
-              <>
-                Hold <span className="kbd">Fn</span> and speak. Release, and the text appears
-                in whatever app you&rsquo;re working in.
-              </>
+              <DictationHint />
             )}
           </p>
         </div>

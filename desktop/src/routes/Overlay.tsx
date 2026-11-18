@@ -12,12 +12,14 @@ import { Reveal } from '../lib/motion';
 import { GlyphPreview } from '../components/GlyphPreview';
 import { DictationKeys, SnippetsCard } from '../components/Snippets';
 import { Pattern } from '../lib/glyphPattern';
+import { usePlatform } from '../lib/platform';
 
 type Backdrop = 'light' | 'dark' | 'photo';
 
 const DEFAULT_CUSTOM = ['#D9713F', '#17150F'];
 
 export function Overlay() {
+  const platform = usePlatform();
   const qc = useQueryClient();
   const cfg = useQuery({ queryKey: ['overlay'], queryFn: api.overlay });
   const [backdrop, setBackdrop] = useState<Backdrop>('light');
@@ -75,9 +77,9 @@ export function Overlay() {
 
   const pick = (id: string) => {
     if (id === 'custom') {
-      save.mutate({ theme: 'custom', colors: custom.length ? custom : DEFAULT_CUSTOM, preview: true });
+      save.mutate({ theme: 'custom', colors: custom.length ? custom : DEFAULT_CUSTOM, preview: platform.overlay });
     } else {
-      save.mutate({ theme: id, preview: true });
+      save.mutate({ theme: id, preview: platform.overlay });
     }
   };
 
@@ -88,7 +90,7 @@ export function Overlay() {
 
   const commitCustom = (next: string[]) => {
     setCustom(next);
-    save.mutate({ theme: 'custom', colors: next, preview: true });
+    save.mutate({ theme: 'custom', colors: next, preview: platform.overlay });
   };
 
   return (
@@ -100,6 +102,7 @@ export function Overlay() {
           by default the colour comes from <b>what you are actually saying</b>, so the twelve
           columns move as one field and never repeat the same arrangement twice.
         </p>
+        {!platform.overlay && <p className="card-s">The floating glyph is available on X11. This session uses the in-app recording indicator; these colour previews remain available.</p>}
       </header>
 
       {/* ── The thing itself ── */}
@@ -150,8 +153,8 @@ export function Overlay() {
               className="btn gho"
               style={{ width: 'auto' }}
               onClick={() => flash.mutate()}
-              disabled={flash.isPending || !data.show_overlay}
-              title={data.show_overlay ? 'Show it on screen for a moment' : 'The overlay is switched off'}
+              disabled={flash.isPending || !data.show_overlay || !platform.overlay}
+              title={!platform.overlay ? 'Floating overlays are unavailable in this session' : data.show_overlay ? 'Show it on screen for a moment' : 'The overlay is switched off'}
             >
               Show it on screen
             </button>
@@ -174,7 +177,7 @@ export function Overlay() {
             <button
               key={p.id}
               className={data.pattern === p.id ? 'pat on' : 'pat'}
-              onClick={() => save.mutate({ pattern: p.id, preview: true })}
+              onClick={() => save.mutate({ pattern: p.id, preview: platform.overlay })}
               disabled={save.isPending}
             >
               <div className={`pat-stage ${backdrop}`}>
@@ -301,11 +304,11 @@ export function Overlay() {
         <Reveal className="card" style={{ padding: '18px 22px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
             <button
-              className={data.show_overlay ? 'sw on' : 'sw'}
+              className={data.show_overlay && platform.overlay ? 'sw on' : 'sw'}
               onClick={() => save.mutate({ show_overlay: !data.show_overlay })}
-              disabled={save.isPending}
+              disabled={save.isPending || !platform.overlay}
               role="switch"
-              aria-checked={data.show_overlay}
+              aria-checked={data.show_overlay && platform.overlay}
               aria-label="Show the glyph"
             >
               <i />

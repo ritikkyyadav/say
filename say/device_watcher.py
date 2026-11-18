@@ -32,7 +32,7 @@ class DeviceWatcher:
         try:
             import sounddevice as sd
             default = sd.default.device
-            input_idx = default[0] if isinstance(default, (list, tuple)) else default
+            input_idx = default if default is None or isinstance(default, (int, str)) else default[0]
             if input_idx is None or (isinstance(input_idx, int) and input_idx < 0):
                 return None
             info = sd.query_devices(input_idx)

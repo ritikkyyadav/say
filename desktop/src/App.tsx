@@ -7,6 +7,9 @@ import { Home } from './routes/Home';
 import { Models } from './routes/Models';
 import { Overlay } from './routes/Overlay';
 import { Onboarding } from './routes/Onboarding';
+import { LinuxRecorder } from './components/LinuxRecorder';
+import { LinuxSetup } from './components/LinuxSetup';
+import { usePlatform } from './lib/platform';
 
 // The header used to carry "On-device · Audio never leaves this Mac" and a
 // pair of status pills. It says nothing now on purpose: a badge that repeats
@@ -32,10 +35,14 @@ export default function App() {
   const navigate = useNavigate();
   const { path } = useRouter();
   const [dismissed, setDismissed] = useState(false);
+  const platform = usePlatform();
   // If the engine cannot be reached we show the app, not the onboarding: a
   // returning user whose engine is briefly down must never be walked through
   // setup again.
-  const profile = useQuery({ queryKey: ['profile'], queryFn: api.profile });
+  const profile = useQuery({
+    queryKey: ['profile'], queryFn: api.profile,
+    refetchInterval: (q) => q.state.data ? false : 1000,
+  });
   const needsOnboarding = profile.data ? !profile.data.onboarded && !dismissed : false;
 
   useEffect(() => {
@@ -52,7 +59,9 @@ export default function App() {
   }, [navigate]);
 
   if (needsOnboarding) {
-    return <Onboarding onDone={() => setDismissed(true)} />;
+    return platform.platform === 'linux'
+      ? <LinuxSetup platform={platform} onDone={() => setDismissed(true)} />
+      : <Onboarding onDone={() => setDismissed(true)} />;
   }
 
   const page = PAGES[path] ?? PAGES['/'];
@@ -62,6 +71,7 @@ export default function App() {
       <Rail />
       <main className="main">
         <TopBar crumb={page.crumb} />
+        {platform.platform === 'linux' && <LinuxRecorder platform={platform} />}
         {page.render()}
       </main>
     </div>

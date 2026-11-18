@@ -17,7 +17,9 @@ import sys
 import threading
 from logging.handlers import RotatingFileHandler
 
-LOG_DIR = os.path.expanduser('~/Library/Logs/Say')
+from platform_paths import application_log_dir
+
+LOG_DIR = str(application_log_dir())
 LOG_FILE = os.path.join(LOG_DIR, 'say.log')
 
 _FMT = logging.Formatter(

@@ -18,6 +18,8 @@ MODEL = 'moonshine/medium-streaming-en'
 
 VALID_MODELS = {
     'moonshine/medium-streaming-en',
+    'whisper-cpp/tiny',
+    'whisper-cpp/small',
     'mlx-community/whisper-tiny-mlx',
     'mlx-community/whisper-base-mlx',
     'mlx-community/whisper-small-mlx',
@@ -87,7 +89,7 @@ DEVICE_WATCH_INTERVAL_S = 2.0
 # -- Language --------------------------------------------------
 # Set to a language code (e.g., 'en', 'es', 'fr', 'hi') for forced language.
 # Set to None for auto-detect (slightly slower, but handles multilingual input).
-LANGUAGE = 'en'
+LANGUAGE: str | None = 'en'
 
 # What the person dictates in — the question the Models page is built around.
 # One of languages.FOCUS_IDS: 'english' (fixed to 'en', the built-in model),

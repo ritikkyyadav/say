@@ -32,7 +32,7 @@ import secrets
 import socket
 import sys
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -243,6 +243,13 @@ def create_app(*, store: TranscriptStore | None = None, auth_token: str | None =
         # other request.
         snapshot = get_bus().snapshot()
         return {'ok': True, 'state': snapshot.get('state', 'idle')}
+
+    @app.get('/platform')
+    async def platform_info(request: Request) -> dict[str, Any]:
+        _check_auth(app, request)
+        from platform_support import get_platform_info
+
+        return get_platform_info()
 
     @app.get('/listener')
     async def listener_state(request: Request) -> dict[str, Any]:
@@ -799,6 +806,7 @@ def serve_blocking(
     port: int | None = None,
     log_level: str = 'warning',
     owner_pid: int | None = None,
+    configure_app: Callable[[FastAPI], None] | None = None,
 ) -> None:
     """Boot the API and block. Returns when uvicorn shuts down.
 
@@ -810,6 +818,8 @@ def serve_blocking(
     chosen_port = port if port is not None else _pick_free_port()
     info = write_runtime(chosen_port, owner_pid=owner_pid)
     app = create_app(auth_token=info['token'])
+    if configure_app is not None:
+        configure_app(app)
 
     config = uvicorn.Config(
         app,

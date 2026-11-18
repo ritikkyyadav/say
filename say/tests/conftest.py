@@ -26,7 +26,10 @@ import tempfile
 
 import pytest
 
-_CACHE_ENV = ('HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE', 'HF_HOME', 'SAY_MOONSHINE_CACHE')
+_CACHE_ENV = (
+    'HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE', 'HF_HOME',
+    'SAY_MOONSHINE_CACHE', 'SAY_WHISPER_CPP_CACHE',
+)
 
 # The user's real settings file. Watched for the whole run: a test that writes
 # to it is a test that can change someone's dictation behaviour.
@@ -75,6 +78,7 @@ def isolated_user_data():
     os.environ.pop('HUGGINGFACE_HUB_CACHE', None)
     os.environ.pop('HF_HOME', None)
     os.environ['SAY_MOONSHINE_CACHE'] = os.path.join(root, 'moonshine')
+    os.environ['SAY_WHISPER_CPP_CACHE'] = os.path.join(root, 'whisper-cpp')
 
     saved_metrics = (metrics.LEDGER_PATH, metrics._ledger)
     saved_settings = (settings.SETTINGS_DIR, settings.SETTINGS_FILE, settings.FIRST_RUN_MARKER)

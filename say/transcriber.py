@@ -205,6 +205,7 @@ class Transcriber:
         self._model_path = model_path or config.MODEL
         self._mlx_whisper: Any = None
         self._ms: Any = None       # moonshine_voice Transcriber, when active
+        self._cpp: Any = None
         self._backend: str | None = None
         self._loaded = False
         self._lock = Lock()
@@ -280,6 +281,14 @@ class Transcriber:
         if status_cb is None:
             status_cb = _log.info
 
+        if self._backend_for(self._model_path) == 'whisper-cpp':
+            from cpp_models import ensure_downloaded
+
+            status_cb(f'Downloading {self._model_path} if needed...')
+            ensure_downloaded(self._model_path)
+            status_cb('Model already verified and ready.')
+            return
+
         if self._backend_for(self._model_path) == 'moonshine':
             if (
                 model_catalog.bundled_dir(self._model_path)
@@ -331,9 +340,27 @@ class Transcriber:
             self._backend = self._backend_for(self._model_path)
             if self._backend == 'moonshine':
                 self._load_moonshine()
+            elif self._backend == 'whisper-cpp':
+                self._load_cpp()
             else:
                 self._load_whisper()
             self._loaded = True
+
+    def _load_cpp(self) -> None:
+        from cpp_models import ensure_downloaded
+        from pywhispercpp.model import Model
+
+        path = ensure_downloaded(self._model_path)
+        self._cpp = Model(
+            str(path), context_params={'use_gpu': False},
+            redirect_whispercpp_logs_to=None,
+            n_threads=max(1, min(4, os.cpu_count() or 1)),
+            print_progress=False, print_realtime=False, print_timestamps=False,
+            no_context=True,
+        )
+        if getattr(self._cpp, '_ctx', None) is None:
+            self._cpp = None
+            raise RuntimeError('The CPU Whisper model could not be loaded.')
 
     def _load_whisper(self) -> None:
         """Load + warm an mlx-whisper model (call under self._lock)."""
@@ -405,6 +432,7 @@ class Transcriber:
                 except Exception:
                     pass
                 self._ms = None
+            self._cpp = None
             self._model_path = new_model_path
             self._loaded = False
             self._backend = None
@@ -437,6 +465,13 @@ class Transcriber:
         to warm up again: the first decode after an unload measured 2.13 s
         against 2.06 s warm. Freed ~2.1 GB. Returns True when it unloaded.
         """
+        if self._backend == 'whisper-cpp':
+            with self._lock:
+                if self._backend != 'whisper-cpp' or self._cpp is None:
+                    return False
+                self._cpp = None
+                self._loaded = False
+                return True
         if self._backend != 'whisper-mlx':
             return False
         try:
@@ -483,6 +518,8 @@ class Transcriber:
             # Moonshine's Python API has no prompt parameter. Its vocabulary
             # repairs run later in the shared post-processing stage.
             text = self._transcribe_moonshine(audio)
+        elif self._backend == 'whisper-cpp':
+            text = self._transcribe_cpp(audio, prompt_override=prompt_override)
         else:
             text = self._transcribe_whisper(audio, prompt_override=prompt_override)
 
@@ -521,6 +558,27 @@ class Transcriber:
         result = self._mlx_whisper.transcribe(audio, **kwargs)
         text = result.get('text', '').strip()
         note_realtime(len(audio) / config.SAMPLE_RATE, time.time() - t0, 'whisper')
+        return text
+
+    def _transcribe_cpp(self, audio, prompt_override: str | None = None) -> str:
+        import numpy as np
+
+        started = time.time()
+        prompt = (prompt_override if prompt_override is not None
+                  else _asr_prompt(len(audio) / float(config.SAMPLE_RATE)))
+        with self._lock:
+            if self._cpp is None:
+                raise RuntimeError('The CPU Whisper model is not loaded.')
+            # Cross-segment context is explicit; never retain a previous dictation in C++ state.
+            segments = self._cpp.transcribe(
+                np.ascontiguousarray(audio, dtype=np.float32),
+                language=config.LANGUAGE or 'auto', initial_prompt=prompt or '',
+                no_context=True,
+                carry_initial_prompt=bool(config.CONDITION_ON_PREVIOUS_TEXT),
+                print_progress=False, print_realtime=False, print_timestamps=False,
+            )
+        text = ' '.join(segment.text for segment in segments).strip()
+        note_realtime(len(audio) / config.SAMPLE_RATE, time.time() - started, 'whisper-cpp')
         return text
 
     def _transcribe_moonshine(self, audio) -> str:

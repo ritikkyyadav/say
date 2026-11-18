@@ -14,6 +14,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api, Transcript } from '../lib/api';
+import type { PlatformInfo } from '../lib/api';
+import { copyText } from '../lib/clipboard';
+import { fallbackPlatform } from '../lib/platform';
 import { appLabel } from '../lib/appNames';
 import { mmss } from '../lib/format';
 
@@ -84,13 +87,14 @@ export function TranscriptRow({ row }: { row: Transcript }) {
   const copy = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await navigator.clipboard.writeText(shown);
+      await copyText(shown);
       setCopied(true);
       setTimeout(() => setCopied(false), 1400);
     } catch {
       /* clipboard unavailable — nothing useful to say about it */
     }
-    api.copyTranscript(row.id).catch(() => {});
+    const platform = qc.getQueryData<PlatformInfo>(['platform']) ?? fallbackPlatform(navigator.userAgent);
+    if (platform.platform !== 'linux') api.copyTranscript(row.id).catch(() => {});
   };
 
   const startFix = (e: React.MouseEvent) => {
@@ -163,6 +167,8 @@ export function TranscriptRow({ row }: { row: Transcript }) {
           {mmss(row.audio_seconds)}
           <i className="sep" />
           {row.word_count} words
+          {row.inject_method === 'manual' && <span className="tfix"> · Manual paste</span>}
+          {row.inject_method === 'held' && <span className="tfix"> · Kept for copy</span>}
           {row.review && !fixed && !checked && (
             <>
               <i className="sep" />

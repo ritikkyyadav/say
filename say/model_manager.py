@@ -31,6 +31,7 @@ import config
 import model_catalog
 import settings as settings_mod
 from logging_setup import get_logger
+from platform_support import supports_backend
 
 _log = get_logger('model_manager')
 
@@ -59,9 +60,9 @@ def _gb(n: int) -> str:
     return f'{gb:.1f} GB' if gb >= 0.1 else f'{max(1, n // 10**6)} MB'
 
 
-def _free_bytes_for_cache() -> int:
+def _free_bytes_for_cache(path: str | None = None) -> int:
     """Free bytes on the volume that holds the HF cache (−1 if unknown)."""
-    path = model_catalog._cache_root()
+    path = path or model_catalog._cache_root()
     while not os.path.exists(path):
         parent = os.path.dirname(path)
         if parent == path:
@@ -142,10 +143,16 @@ class ModelManager:
         if not model_catalog.is_known(model_id):
             raise ValueError(f'Unknown model: {model_id}')
 
-        settings_mod.set_value('MODEL', model_id)
-
+        info = model_catalog.get(model_id)
+        if info is not None and not supports_backend(info.backend):
+            raise ValueError(f'{info.name} is not available on this operating system.')
         with self._lock:
             engine = self._engine
+        state = getattr(engine, 'state', None)
+        if getattr(state, 'value', state) in {'recording', 'processing', 'loading'}:
+            raise ValueError('Finish the current dictation before switching models.')
+        settings_mod.set_value('MODEL', model_id)
+
         if engine is not None:
             try:
                 engine.transcriber.swap_model(model_id)
@@ -197,6 +204,9 @@ class ModelManager:
         if not model_catalog.is_known(model_id):
             raise ValueError(f'Unknown model: {model_id}')
 
+        info = model_catalog.get(model_id)
+        if info is not None and not supports_backend(info.backend):
+            raise ValueError(f'{info.name} is not available on this operating system.')
         if model_catalog.is_downloaded(model_id):
             return {'state': DONE, 'percent': 100, 'error': None}
 
@@ -204,7 +214,12 @@ class ModelManager:
         # would otherwise abort mid-stream with a confusing ENOSPC.
         info = model_catalog.get(model_id)
         need = int((info.download_bytes if info else 0) * _DISK_HEADROOM)
-        free = _free_bytes_for_cache()
+        if info is not None and info.backend == 'whisper-cpp':
+            from cpp_models import cache_root
+
+            free = _free_bytes_for_cache(str(cache_root()))
+        else:
+            free = _free_bytes_for_cache()
         if free >= 0 and need > 0 and free < need:
             raise InsufficientStorage(
                 f'Needs ~{_gb(need)} free, but only {_gb(free)} available.'
@@ -255,6 +270,10 @@ class ModelManager:
         partial-cleanup stay backend-correct and cache-root guarded.
         """
         info = model_catalog.get(model_id)
+        if info is not None and info.backend == 'whisper-cpp':
+            from cpp_models import cache_root, model_path
+
+            return str(model_path(model_id).parent), str(cache_root().resolve())
         if info is not None and info.backend == 'moonshine':
             return (
                 model_catalog.moonshine_model_dir(model_id),
@@ -267,6 +286,9 @@ class ModelManager:
 
     def _cleanup_partial(self, model_id: str) -> None:
         """Remove a half-written cache dir (after cancel) — cache-root guarded."""
+        info = model_catalog.get(model_id)
+        if info is not None and info.backend == 'whisper-cpp':
+            return  # The locked downloader removes only its own partial file.
         target, cache_root = self._storage_for(model_id)
         if _inside(target, cache_root) and os.path.isdir(target):
             shutil.rmtree(target, ignore_errors=True)
@@ -291,6 +313,8 @@ class ModelManager:
             _log.info('Downloading model %s (backend=%s)', model_id, backend)
             if backend == 'moonshine':
                 self._download_moonshine(model_id, cancel_ev)
+            elif backend == 'whisper-cpp':
+                self._download_cpp(model_id, cancel_ev)
             else:
                 from huggingface_hub import snapshot_download
 
@@ -309,6 +333,17 @@ class ModelManager:
             stop_poll.set()
             with self._lock:
                 self._cancels.pop(model_id, None)
+
+    def _download_cpp(self, model_id: str, cancel_ev: threading.Event) -> None:
+        import cpp_models
+
+        def progress(have: int, total: int) -> None:
+            self._set_status(model_id, percent=min(99, int(have * 100 / max(total, 1))))
+
+        try:
+            cpp_models.ensure_downloaded(model_id, progress=progress, cancelled=cancel_ev.is_set)
+        except cpp_models.DownloadCancelled:
+            raise DownloadCancelled() from None
 
     def _download_moonshine(self, model_id: str, cancel_ev: threading.Event) -> None:
         """Fetch a Moonshine model into its cache via moonshine_voice.

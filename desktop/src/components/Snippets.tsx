@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { Reveal } from '../lib/motion';
+import { usePlatform } from '../lib/platform';
 
 type Row = { trigger: string; text: string };
 
@@ -21,11 +22,23 @@ const KEYS: [string, string][] = [
 ];
 
 export function DictationKeys() {
+  const platform = usePlatform();
+  const keys: [string, string][] = platform.platform !== 'linux' ? KEYS : platform.global_hotkey ? [
+    [`Hold ${platform.hotkey_label ?? 'Ctrl+Space'}`, 'Dictate while held; release to insert in the focused app'],
+    [`Tap ${platform.hotkey_label ?? 'Ctrl+Space'}`, 'Hands-free; tap again to finish'],
+    ['Esc', 'Cancel the recording'],
+    ['History Copy', 'Retrieve any saved dictation'],
+  ] : [
+    ['Record / Stop', 'Use the in-app buttons to capture your words'],
+    ['Copy text', 'Copy the complete result when it is ready'],
+    ['Ctrl + V', 'Paste into your target app'],
+    ['Cancel', 'Discard the active recording'],
+  ];
   return (
     <Reveal className="card" style={{ padding: '18px 22px' }}>
       <div className="card-t">Keys</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '8px 18px', marginTop: 12 }}>
-        {KEYS.map(([key, what]) => (
+        {keys.map(([key, what]) => (
           <div key={key} style={{ display: 'contents' }}>
             <span className="kbd">{key}</span>
             <span className="card-s" style={{ marginTop: 0 }}>{what}</span>
@@ -37,6 +50,7 @@ export function DictationKeys() {
 }
 
 export function SnippetsCard() {
+  const platform = usePlatform();
   const qc = useQueryClient();
   const cfg = useQuery({ queryKey: ['snippets'], queryFn: api.snippets });
   const [rows, setRows] = useState<Row[]>([]);
@@ -73,7 +87,7 @@ export function SnippetsCard() {
     <Reveal className="card" style={{ padding: 22 }}>
       <div className="card-t">Snippets</div>
       <div className="card-s" style={{ marginBottom: 14, maxWidth: '60ch' }}>
-        Say the trigger as the whole dictation and Say types the text instead, exactly as written.
+        Say the trigger as the whole dictation and {platform.manual_paste ? 'the saved text is prepared for copy' : 'Say types the text instead'}, exactly as written.
         The same words inside a longer sentence never expand. Triggers need at least {min} words.
       </div>
       {rows.map((row, i) => (

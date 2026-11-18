@@ -35,10 +35,12 @@ const WHAT_FOR: Record<string, string> = {
 };
 
 function whatFor(m: ModelInfo): string {
+  if (m.supported === false) return m.unavailable_reason ?? m.description;
   return WHAT_FOR[m.id] ?? m.description;
 }
 
 function statusOf(m: ModelInfo): { key: 'now' | 'dl' | 'have' | 'none'; label: string } {
+  if (m.supported === false) return { key: 'none', label: 'Not available here' };
   if (m.active) return { key: 'now', label: 'In use' };
   if (m.download.state === 'downloading') {
     const pct = Math.round(m.download.percent);
@@ -62,7 +64,7 @@ function FocusStatus({
   const group = lang.groups.find((g) => g.id === lang.focus);
   if (!group || !rec) return null;
 
-  const activeUnderstands = active
+  const activeUnderstands = active && active.supported !== false
     ? lang.focus === 'english' || active.languages === 'multilingual'
     : false;
 
@@ -170,7 +172,7 @@ function ModelRow({ m, recommended }: { m: ModelInfo; recommended: boolean }) {
       : m.download.error;
 
   return (
-    <div className={`mrow${m.active ? ' now' : ''}${recommended ? ' rec' : ''}`}>
+    <div className={`mrow${m.active ? ' now' : ''}${recommended ? ' rec' : ''}${m.supported === false ? ' unavailable' : ''}`}>
       <div className="mrow-main">
         <div className="mrow-top">
           <span className={`mstat ${status.key}`}>{status.label}</span>
@@ -201,7 +203,9 @@ function ModelRow({ m, recommended }: { m: ModelInfo; recommended: boolean }) {
       </div>
 
       <div className="mrow-act">
-        {m.active ? (
+        {m.supported === false ? (
+          <button className="btn gho" disabled title={m.unavailable_reason ?? 'Unsupported runtime'}>Not available</button>
+        ) : m.active ? (
           <button className="btn gho" disabled>
             In use
           </button>
@@ -297,7 +301,7 @@ export function Models() {
         <Reveal className="sec-h">
           <h2>Every model, and where it stands</h2>
           <p>
-            <b>In use</b> is what transcribes right now. <b>Installed</b> is on this Mac and one
+            <b>In use</b> is what transcribes right now. <b>Installed</b> is on this computer and one
             click away. <b>Not installed</b> has to be downloaded first.
           </p>
         </Reveal>

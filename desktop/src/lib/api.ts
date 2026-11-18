@@ -25,7 +25,7 @@ export type DictationStateName =
 export type DictationStateEvent = {
   state: DictationStateName;
   message?: string;
-  mode?: 'ptt' | 'hands_free' | null;
+  mode?: 'ptt' | 'hands_free' | 'manual' | null;
   error?: string | null;
   /** Segments decoded so far while processing, so a long wait reads as
    *  "3 of 7" instead of an unexplained spinner. */
@@ -76,7 +76,7 @@ export type Correction = {
 };
 
 export type ListenerState = {
-  kind: 'fn' | 'legacy' | null;
+  kind: 'fn' | 'legacy' | 'x11' | 'manual' | null;
   label: string | null;
   fell_back: boolean;
   fn_error: string | null;
@@ -117,6 +117,26 @@ export type UserProfile = {
   first_name: string;
   /** Desktop first-run flow completed. Local flag; there is no account. */
   onboarded: boolean;
+};
+
+export type PlatformInfo = {
+  platform: 'linux' | 'macos' | 'windows' | 'other';
+  session: 'x11' | 'wayland' | 'headless' | 'native';
+  automatic_insertion: boolean;
+  global_hotkey: boolean;
+  hotkey_label: string | null;
+  overlay: boolean;
+  manual_paste: boolean;
+  supported_backends: string[];
+};
+
+export type DictationStatus = {
+  state: DictationStateName;
+  message: string;
+  mode: string | null;
+  can_record: boolean;
+  shortcut_started: boolean;
+  latest: { id: number | null; text: string; delivery: 'inserted' | 'manual' | 'held' | 'failed' } | null;
 };
 
 // ── Language ────────────────────────────────────────────────────────────
@@ -256,7 +276,9 @@ export type ModelInfo = {
   recommended: boolean;
   order: number;
   description: string;
-  backend: 'whisper-mlx' | 'moonshine' | string;
+  backend: 'whisper-mlx' | 'moonshine' | 'whisper-cpp' | string;
+  supported?: boolean;
+  unavailable_reason?: string | null;
   downloaded: boolean;
   bundled: boolean;
   size_bytes: number;
@@ -339,15 +361,13 @@ async function readRuntimeFromDevMiddleware(): Promise<EngineEndpoint | null> {
 
 export async function getEngineEndpoint(force = false): Promise<EngineEndpoint> {
   if (!force && cachedEndpoint) return cachedEndpoint;
-  // 1. Inside the Tauri shell → ask Rust to read runtime.json directly.
-  try {
+  const inTauri = typeof window !== 'undefined' &&
+    Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+  if (inTauri) {
     const ep = await invokeTauri<EngineEndpoint | null>('get_engine_endpoint');
-    if (ep && ep.port) {
-      cachedEndpoint = ep;
-      return ep;
-    }
-  } catch {
-    /* not in Tauri — try dev paths */
+    if (!ep || !ep.port) throw new Error('The dictation engine is still starting.');
+    cachedEndpoint = ep;
+    return ep;
   }
   // 2. Plain browser dev → /__say/runtime middleware re-reads runtime.json.
   const live = await readRuntimeFromDevMiddleware();
@@ -363,7 +383,7 @@ export async function getEngineEndpoint(force = false): Promise<EngineEndpoint> 
     return cachedEndpoint;
   }
   throw new Error(
-    'Cannot reach the dictation engine. Start it with `python say/app.py --server` (dev) or launch the bundled Say.app.',
+    'Cannot reach the dictation engine. Launch the bundled Say app, or start the platform engine in development.',
   );
 }
 
@@ -439,6 +459,10 @@ async function sendJSON<T>(method: 'POST' | 'DELETE', path: string, body?: unkno
 }
 
 export const api = {
+  platform: () => getJSON<PlatformInfo>('/platform'),
+  dictation: () => getJSON<DictationStatus>('/dictation'),
+  controlDictation: (action: 'start' | 'stop' | 'cancel') =>
+    sendJSON<{ accepted: boolean }>('POST', '/dictation/control', { action }),
   health: () => getJSON<{ ok: boolean; state: DictationStateName }>('/health'),
   listener: () => getJSON<ListenerState>('/listener'),
   profile: () => getJSON<UserProfile>('/user/profile'),

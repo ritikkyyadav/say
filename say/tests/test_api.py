@@ -191,7 +191,7 @@ class ApiTests(unittest.TestCase):
             prev = os.environ.get('HF_HUB_CACHE')
             orig_free = model_manager._free_bytes_for_cache
             os.environ['HF_HUB_CACHE'] = cache
-            model_manager._free_bytes_for_cache = lambda: 1000
+            model_manager._free_bytes_for_cache = lambda path=None: 1000
             try:
                 r = self.client.post(
                     '/models/mlx-community/whisper-tiny-mlx/download?token=secret'

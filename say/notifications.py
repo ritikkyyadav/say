@@ -5,6 +5,7 @@
 # ============================================================
 
 import subprocess
+import sys
 
 import config
 
@@ -31,6 +32,16 @@ def notify(title: str, text: str):
     display_text = ' '.join(text.split())
     if len(display_text) > 80:
         display_text = display_text[:80] + '…'
+
+    if sys.platform.startswith('linux'):
+        try:
+            subprocess.run(
+                ['notify-send', '--app-name=Say', '--', title, display_text],
+                capture_output=True, timeout=3,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return
 
     # The text is passed as an *argument*, never interpolated into the script.
     # Hand-escaping quotes and backslashes was correct as written, but it is

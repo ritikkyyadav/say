@@ -5,6 +5,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { api, openPrivacySettings, PrivacyPane } from '../lib/api';
+import { usePlatform } from '../lib/platform';
 
 const PANES: { pane: PrivacyPane; label: string; why: string }[] = [
   { pane: 'microphone', label: 'Microphone', why: 'so Say can hear you' },
@@ -13,14 +14,16 @@ const PANES: { pane: PrivacyPane; label: string; why: string }[] = [
 ];
 
 export function PermissionsBanner() {
+  const platform = usePlatform();
   const { data: listener } = useQuery({
     queryKey: ['listener'],
     queryFn: api.listener,
+    enabled: platform.platform !== 'linux',
     refetchInterval: 4_000,
     staleTime: 0,
   });
 
-  if (!listener) return null;
+  if (platform.platform === 'linux' || !listener) return null;
   // Fn is live and nothing fell back — there is nothing to tell anyone.
   if (listener.kind === 'fn' && !listener.fell_back) return null;
 

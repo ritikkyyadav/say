@@ -4,13 +4,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const RUNTIME_PATH = path.join(
-  os.homedir(),
-  'Library',
-  'Application Support',
-  'Say',
-  'runtime.json',
-);
+const DATA_HOME = process.platform === 'darwin'
+  ? path.join(os.homedir(), 'Library', 'Application Support')
+  : process.platform === 'win32'
+    ? process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming')
+    : process.env.XDG_DATA_HOME && path.isAbsolute(process.env.XDG_DATA_HOME)
+      ? process.env.XDG_DATA_HOME : path.join(os.homedir(), '.local', 'share');
+const RUNTIME_PATH = process.env.SAY_RUNTIME_FILE || path.join(DATA_HOME, 'Say', 'runtime.json');
 
 function readRuntime(): { host: string; port: number; token: string } | null {
   try {

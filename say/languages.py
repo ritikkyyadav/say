@@ -19,6 +19,7 @@ from typing import TypedDict
 
 import config
 import model_catalog
+from platform_support import supports_backend
 
 AUTO = None
 
@@ -68,7 +69,8 @@ _EUROPEAN = ('en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'pl', 'ru', 'uk', 'tr')
 _SOUTH_ASIAN = ('en', 'hi', 'ur', 'bn', 'ta', 'te', 'mr', 'gu', 'pa')
 
 ENGLISH_MODEL = 'moonshine/medium-streaming-en'
-MULTILINGUAL_MODEL = 'mlx-community/whisper-large-v3-turbo'
+MULTILINGUAL_MODEL = ('whisper-cpp/small' if supports_backend('whisper-cpp')
+                      else 'mlx-community/whisper-large-v3-turbo')
 
 
 class FocusGroup(TypedDict):
@@ -212,4 +214,4 @@ def applies_to(model_id: str) -> bool:
     argument; telling someone their choice is in effect there would be a lie.
     """
     info = model_catalog.get(model_id)
-    return info is not None and info.backend == 'whisper-mlx'
+    return info is not None and info.backend in {'whisper-mlx', 'whisper-cpp'}

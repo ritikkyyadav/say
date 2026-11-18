@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "macOSPrivateApi": false
+  },
+  "bundle": {
+    "targets": ["deb", "appimage"],
+    "shortDescription": "Local-first dictation",
+    "longDescription": "Say is a local-first voice dictation app. Audio stays on your device.",
+    "resources": {
+      "../../say/dist/linux/SayEngine/": "engine/"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libportaudio2",
+          "libasound2 | libasound2t64",
+          "libxcb-cursor0",
+          "libxkbcommon-x11-0",
+          "libegl1",
+          "libgl1"
+        ]
+      }
+    }
+  }
+}

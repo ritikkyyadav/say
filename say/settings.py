@@ -23,10 +23,11 @@ from typing import Any
 
 import config
 from logging_setup import get_logger
+from platform_paths import application_data_dir
 
 _log = get_logger('settings')
 
-SETTINGS_DIR = os.path.expanduser('~/Library/Application Support/Say')
+SETTINGS_DIR = str(application_data_dir())
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, 'settings.json')
 FIRST_RUN_MARKER = os.path.join(SETTINGS_DIR, 'first_run_complete')
 

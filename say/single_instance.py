@@ -30,7 +30,7 @@ class _Lock:
     fp: IO[str] | None = None
 
 
-def acquire() -> bool:
+def acquire(*, strict: bool = False) -> bool:
     """Try to acquire the single-instance lock. Returns True on success."""
     import fcntl
 
@@ -38,6 +38,8 @@ def acquire() -> bool:
         os.makedirs(SETTINGS_DIR, exist_ok=True)
     except Exception as exc:
         _log.warning('Could not create settings dir for lock: %s', exc)
+        if strict:
+            return False
 
     try:
         # Intentionally not a context manager — the FD must outlive this
@@ -45,7 +47,7 @@ def acquire() -> bool:
         fp = open(LOCK_PATH, 'w', encoding='utf-8')  # noqa: SIM115
     except Exception as exc:
         _log.warning('Could not open lock file %s: %s', LOCK_PATH, exc)
-        return True  # fail open — better to run than block
+        return not strict  # legacy entry points retain their fail-open behavior
 
     try:
         fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)

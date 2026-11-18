@@ -4,10 +4,12 @@ import { Router } from './lib/router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
 import './styles/index.css';
+import './styles/linux.css';
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
+      networkMode: 'always',
       staleTime: 30_000,
       refetchOnWindowFocus: false,
       // Retry up to 4 times with exponential backoff (1s → 2s → 4s → 8s)
@@ -15,6 +17,7 @@ const queryClient = new QueryClient({
       retry: 4,
       retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 10_000),
     },
+    mutations: { networkMode: 'always' },
   },
 });
 

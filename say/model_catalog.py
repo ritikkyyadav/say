@@ -26,6 +26,7 @@ import os
 from dataclasses import asdict, dataclass
 
 from logging_setup import get_logger
+from platform_support import supports_backend
 
 _log = get_logger('model_catalog')
 
@@ -146,6 +147,20 @@ CATALOG: tuple[ModelInfo, ...] = (
         recommended=False,
         order=6,
         description='Smallest and fastest. Best for testing or quick notes.',
+    ),
+    ModelInfo(
+        id='whisper-cpp/tiny', name='Tiny (CPU)', family='whisper', params='39M',
+        download_bytes=77_691_713, speed=4, accuracy=1, languages='multilingual',
+        recommended=False, order=7,
+        description='Small multilingual CPU model for quick notes and lower-memory Linux devices.',
+        backend='whisper-cpp',
+    ),
+    ModelInfo(
+        id='whisper-cpp/small', name='Small (CPU)', family='whisper', params='244M',
+        download_bytes=487_601_967, speed=2, accuracy=3, languages='multilingual',
+        recommended=False, order=8,
+        description='Multilingual dictation on Linux. Runs locally on the CPU, without Apple MLX.',
+        backend='whisper-cpp',
     ),
 )
 
@@ -306,9 +321,13 @@ def _weights_present(repo: str) -> bool:
 
 def is_downloaded(model_id: str) -> bool:
     """Whether the model is ready to load offline (cached or bundled)."""
+    info = get(model_id)
+    if info is not None and info.backend == 'whisper-cpp':
+        from cpp_models import is_downloaded as cpp_downloaded
+
+        return cpp_downloaded(model_id)
     if bundled_dir(model_id) is not None:
         return True
-    info = get(model_id)
     if info is not None and info.backend == 'moonshine':
         return _moonshine_present(moonshine_model_dir(model_id))
     return _weights_present(repo_dir(model_id))
@@ -339,10 +358,17 @@ def disk_usage_bytes(model_id: str) -> int:
     blob bytes in the HF cache (including any in-flight ``*.incomplete``
     files, so a download in progress reports a rising number).
     """
+    info = get(model_id)
+    if info is not None and info.backend == 'whisper-cpp':
+        from cpp_models import cache_root, model_path
+
+        folder = model_path(model_id).parent
+        if not folder.resolve().is_relative_to(cache_root().resolve()):
+            return 0
+        return _dir_real_bytes(str(folder)) if folder.is_dir() else 0
     bundled = bundled_dir(model_id)
     if bundled is not None:
         return _dir_real_bytes(bundled)
-    info = get(model_id)
     if info is not None and info.backend == 'moonshine':
         d = moonshine_model_dir(model_id)
         return _dir_real_bytes(d) if os.path.isdir(d) else 0
@@ -357,9 +383,16 @@ def disk_usage_bytes(model_id: str) -> int:
 
 def to_dict(info: ModelInfo) -> dict:
     """Catalog entry plus live cache state, ready for JSON."""
-    bundled = bundled_dir(info.id) is not None
+    bundled = info.backend != 'whisper-cpp' and bundled_dir(info.id) is not None
+    supported = supports_backend(info.backend)
+    reason = None
+    if not supported:
+        reason = ('The CPU runtime is available in the Linux app.' if info.backend == 'whisper-cpp'
+                  else 'The MLX runtime requires Apple Silicon macOS.')
     return {
         **asdict(info),
+        'supported': supported,
+        'unavailable_reason': reason,
         'downloaded': is_downloaded(info.id),
         'bundled': bundled,
         'size_bytes': disk_usage_bytes(info.id),

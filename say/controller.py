@@ -111,12 +111,20 @@ class DictationController:
         status_callback: StatusCallback | None = None,
         logger: Logger | None = print,
         backspacer: Callable[[int], Any] | None = None,
+        frontmost: Callable[[], str | None] | None = None,
+        clipboard_writer: Callable[[str], bool] | None = None,
+        manual_delivery: bool = False,
+        require_focus: bool = False,
     ):
         self.recorder = recorder
         self.transcriber = transcriber
         # Presses Backspace n times, for undo. Injectable so tests never post
         # real key events.
         self._backspacer = backspacer
+        self._frontmost_source = frontmost
+        self._clipboard_writer = clipboard_writer
+        self._manual_delivery = manual_delivery
+        self._require_focus = require_focus
         self.injector = injector
         self.status_callback = status_callback
         self.logger = logger
@@ -126,6 +134,8 @@ class DictationController:
         # The app that had focus when the recording began — where the words
         # were meant to go. Compared against the focus at injection time.
         self._target_app: str | None = None
+        self.last_result: dict[str, Any] | None = None
+        self.recording_sequence = 0
         self._lock = threading.RLock()
         # Streaming transcription session for the current recording, if any.
         self._session: Any = None
@@ -145,6 +155,22 @@ class DictationController:
         set_event = getattr(recorder, 'set_event_callback', None)
         if callable(set_event):
             set_event(self._on_audio_event)
+
+    def _frontmost(self) -> str | None:
+        try:
+            return self._frontmost_source() if self._frontmost_source else get_frontmost_app()
+        except Exception:
+            _log.debug('Focused app unavailable', exc_info=True)
+            return None
+
+    def _recover_text(self, text: str) -> bool:
+        if self._clipboard_writer is None:
+            return self._copy_to_clipboard(text)
+        try:
+            return bool(self._clipboard_writer(text))
+        except Exception:
+            _log.warning('Clipboard recovery unavailable', exc_info=True)
+            return False
 
     def _on_audio_event(self, event_type: str, message: str | None) -> None:
         """Handle out-of-band events from the audio recorder / device watcher.
@@ -340,11 +366,13 @@ class DictationController:
                 self._cancel_idle_unload()
                 self._recording = True
                 self._recording_mode = mode
+                self.recording_sequence += 1
+                self.last_result = None
                 self._press_open = True
                 self._press_mode = mode
                 # Captured now, not after transcription: this is the document
                 # the user was looking at when they pressed the key.
-                self._target_app = get_frontmost_app()
+                self._target_app = self._frontmost()
                 try:
                     self._begin_streaming()
                     self.recorder.start()
@@ -367,7 +395,8 @@ class DictationController:
             notify_error(error_for_notify)
             return False
 
-        mode_label = 'Hands-free' if mode == 'hands_free' else 'Push-to-talk'
+        mode_label = ('Record for copy' if mode == 'manual' else
+                      'Hands-free' if mode == 'hands_free' else 'Push-to-talk')
         self._emit(
             DictationState.RECORDING,
             f'Recording ({mode_label})...',
@@ -420,6 +449,7 @@ class DictationController:
         with self._lock:
             if not self._recording:
                 return False
+            manual_delivery = self._manual_delivery or self._recording_mode == 'manual'
             self._recording = False
             self._recording_mode = None
 
@@ -507,9 +537,12 @@ class DictationController:
         # Where the recording began is where the words were meant to go; where
         # focus is now decides whether typing them is still safe.
         started_in = self._target_app
-        now_in = get_frontmost_app()
+        now_in = self._frontmost()
         target_app = started_in or now_in
         decision = focus_policy(started_in, now_in)
+        unknown_focus = self._require_focus and (not started_in or not now_in)
+        if unknown_focus:
+            decision = 'hold'
 
         raw_asr = text
         try:
@@ -534,7 +567,8 @@ class DictationController:
         transcript_preview = preview_text(text)
         self._emit(
             DictationState.PROCESSING,
-            f'Injecting text ({inference_seconds:.1f}s inference)...',
+            (f'Saving transcript ({inference_seconds:.1f}s inference)...' if manual_delivery
+             else f'Injecting text ({inference_seconds:.1f}s inference)...'),
             preview=transcript_preview,
         )
 
@@ -563,10 +597,12 @@ class DictationController:
         except Exception:
             _log.exception('Failed to persist transcript before injection')
 
-        if decision == 'hold':
+        if manual_delivery or decision == 'hold':
             return self._hold_transcript(
                 store, transcript_id, text, audio, transcript_preview,
                 started_in, now_in, duration, inference_seconds,
+                manual=manual_delivery,
+                reason='Focused app could not be verified' if unknown_focus else None,
             )
 
         result = self.injector(text)
@@ -588,6 +624,10 @@ class DictationController:
             except Exception:
                 _log.exception('Failed to record injection outcome')
 
+        self.last_result = {
+            'id': transcript_id, 'text': text,
+            'delivery': 'inserted' if result.success else 'failed',
+        }
         if result.success:
             self._remember_delivery(transcript_id, text, target_app)
             self._close_press(
@@ -614,7 +654,7 @@ class DictationController:
         # Injection failed. The text is already in history; put it on the
         # clipboard too so recovering it is one ⌘V rather than a trip to the
         # Home tab.
-        recovered = self._copy_to_clipboard(text)
+        recovered = self._recover_text(text)
         self._close_press(
             'error:injection', audio_seconds=round(duration, 3),
             wait_seconds=round(inference_seconds, 3), method=result.method,
@@ -645,30 +685,44 @@ class DictationController:
     def _hold_transcript(
         self, store, transcript_id, text, audio, transcript_preview,
         started_in, now_in, duration, inference_seconds,
+        *, manual: bool = False, reason: str | None = None,
     ) -> bool:
-        """Focus moved while we were transcribing: keep the words, do not type.
+        """Keep the words without typing when delivery is deferred.
 
         The transcript is already in history; putting it on the clipboard too
         makes recovery one paste. Recorded as `held`, not as a failure of the
         injector — nothing broke, the user simply went somewhere else.
         """
-        recovered = self._copy_to_clipboard(text)
+        recovered = False if manual else self._recover_text(text)
+        self.last_result = {
+            'id': transcript_id, 'text': text,
+            'delivery': 'manual' if manual else 'held',
+        }
         self._close_press(
             'held', audio_seconds=round(duration, 3),
             wait_seconds=round(inference_seconds, 3), recovered_to_clipboard=recovered,
         )
         if store is not None and transcript_id:
             try:
-                store.set_outcome(transcript_id, success=False, inject_method='held')
+                store.set_outcome(
+                    transcript_id, success=False, inject_method='manual' if manual else 'held',
+                )
                 self._save_recording(store, transcript_id, audio)
             except Exception:
                 _log.exception('Failed to record the held transcript')
         where = now_in or 'another app'
         detail = 'copied to the clipboard' if recovered else 'saved to history'
-        message = f'Focus moved to {where} — transcript {detail}'
-        _log.info('Held transcript: began in %s, focus now in %s', started_in, now_in)
+        if manual:
+            message = 'Ready to copy — paste the transcript into your app'
+            if store is None or transcript_id is None:
+                message += ' (history could not be saved)'
+        else:
+            message = f'{reason or f"Focus moved to {where}"} — transcript {detail}'
+        _log.info('Held transcript: manual=%s, began in %s, focus now in %s',
+                  manual, started_in, now_in)
         self._emit(DictationState.READY, message, preview=transcript_preview)
-        notify_error(message)
+        if not manual:
+            notify_error(message)
         get_ledger().record(
             event='held',
             stage='injection',
@@ -734,14 +788,14 @@ class DictationController:
             notify_error('Nothing to re-insert yet.')
             get_ledger().record(event='recall', action='reinsert', outcome='nothing')
             return False
-        app = get_frontmost_app()
+        app = self._frontmost()
         result = self.injector(text)
         if result.success:
             self._remember_delivery(transcript_id, text, app)
             get_ledger().record(event='recall', action='reinsert', outcome='delivered',
                                 words=len(text.split()), method=result.method)
             return True
-        recovered = self._copy_to_clipboard(text)
+        recovered = self._recover_text(text)
         notify_error(
             f'Re-insert failed ({result.error or "unknown error"})'
             + (' — copied to the clipboard' if recovered else '')
@@ -762,7 +816,7 @@ class DictationController:
             return False
         last = self._last_delivery
         reason = recall.undo_refusal(
-            last, now=time.monotonic(), frontmost=get_frontmost_app(), keystrokes=self._inputs(),
+            last, now=time.monotonic(), frontmost=self._frontmost(), keystrokes=self._inputs(),
         )
         if reason is not None or last is None:
             notify_error(reason or 'Nothing to undo.')
