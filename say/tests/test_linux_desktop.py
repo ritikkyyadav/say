@@ -123,7 +123,7 @@ class Mime:
     def formats(self):
         return list(self.values)
     def data(self, name):
-        return self.values.get(name, b'')
+        return SimpleNamespace(data=lambda: self.values.get(name, b''))
     def setData(self, name, data):
         self.values[name] = bytes(data)
     def setText(self, text):

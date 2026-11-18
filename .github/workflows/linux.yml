@@ -49,14 +49,20 @@ jobs:
       - name: Native system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config libportaudio2 libasound2-dev libasound2-plugins libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config dbus libportaudio2 libasound2-dev libasound2-plugins libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0
       - name: Pinned Python dependencies
+        id: dependencies
         run: python -m pip install -r linux/requirements-build.txt
+      - name: Real Qt MIME and lock-signal contracts
+        if: always() && steps.dependencies.outcome == 'success'
+        run: dbus-run-session -- python linux/qt_smoke.py
       - name: Python lint and type check
+        if: always() && steps.dependencies.outcome == 'success'
         run: |
           python -m ruff check say
           python -m mypy say
       - name: Portable and Linux unit tests
+        if: always() && steps.dependencies.outcome == 'success'
         run: |
           python -m pytest say/tests --junitxml=linux-tests.xml \
             --ignore=say/tests/test_brand_assets.py \
@@ -65,6 +71,7 @@ jobs:
             --ignore=say/tests/test_overlay_window.py \
             --ignore=say/tests/test_text_inject.py
       - name: Frontend startup tests and production build
+        if: always() && steps.dependencies.outcome == 'success'
         working-directory: desktop
         run: |
           npm ci --no-audit --no-fund

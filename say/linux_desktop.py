@@ -220,7 +220,7 @@ class LinuxDesktop:
         snapshot: dict[str, bytes] = {}
         size = 0
         for name in formats:
-            data = bytes(source.data(name))
+            data = source.data(name).data()
             size += len(data)
             if size > _MAX_CLIPBOARD_BYTES or cancelled.is_set():
                 return InjectionResult(False, 'clipboard', 'Clipboard could not be preserved safely.')
@@ -260,7 +260,7 @@ class LinuxDesktop:
         finally:
             current = clipboard.mimeData()
             if (clipboard.ownsClipboard() and current is not None
-                    and bytes(current.data(_OWNER_MIME)) == marker):
+                    and current.data(_OWNER_MIME).data() == marker):
                 restored = self._core.QMimeData()
                 for name, data in snapshot.items():
                     restored.setData(name, data)
@@ -300,12 +300,12 @@ class LinuxDesktop:
             ]:
                 results.append(session.connect(
                     service, path, service, 'ActiveChanged', self._watcher,
-                    QtCore.SLOT('screenChanged(bool)'),
+                    QtCore.SLOT('screenChanged(bool)').encode(),
                 ))
             results.append(system.connect(
                 'org.freedesktop.login1', '/org/freedesktop/login1',
                 'org.freedesktop.login1.Manager', 'PrepareForSleep', self._watcher,
-                QtCore.SLOT('sleepChanged(bool)'),
+                QtCore.SLOT('sleepChanged(bool)').encode(),
             ))
             return any(results)
         except Exception as exc:
