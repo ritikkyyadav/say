@@ -84,15 +84,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri -> target
+      - name: Native WebDriver tool
+        run: cargo install tauri-driver --version 2.1.0 --locked
       - name: Freeze the native offline engine
         run: xvfb-run -a python linux/build_engine.py
       - name: Native launcher tests
         run: |
           TAURI_CONFIG="$(cat desktop/src-tauri/tauri.linux.conf.json)" cargo test --locked --release --features custom-protocol --manifest-path desktop/src-tauri/Cargo.toml
       - name: Build Debian and AppImage packages
+        id: packages
         working-directory: desktop
         run: npm run tauri:build -- --ci --config src-tauri/tauri.linux.conf.json --bundles deb,appimage
+      - name: Packaged offline recognition and desktop delivery
+        run: python linux/package_smoke.py
       - name: Keep native packages and provenance
+        if: always() && steps.packages.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: linux-packages-${{ matrix.arch }}
@@ -107,5 +113,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-source-checks-${{ matrix.arch }}
-          path: linux-tests.xml
+          path: |
+            linux-tests.xml
+            say/dist/linux-smoke/**/*.png
+            say/dist/linux-smoke/**/gui-smoke.json
+            say/dist/linux-smoke/**/cli-smoke.json
+            say/dist/linux-smoke/package-smoke.json
+            say/dist/linux-smoke/**/*.log
           if-no-files-found: ignore
